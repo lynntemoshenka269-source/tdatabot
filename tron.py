@@ -71,7 +71,7 @@ class PaymentConfig:
     
     # 数据库配置
     PAYMENT_DB = "payment.db"
-    MAIN_DB = "tdatabot.db"  # 主数据库（用于授予会员）
+    MAIN_DB = "bot_data.db"  # 主数据库（用于授予会员）- 与 tdata.py 保持一致
     
     @classmethod
     def validate(cls) -> Tuple[bool, str]:
@@ -138,18 +138,18 @@ class QRCodeGenerator:
     
     @staticmethod
     def generate_payment_qr(wallet_address: str, amount: float) -> bytes:
-        """生成支付二维码
+        """生成支付二维码 - 纯地址格式
         
         Args:
             wallet_address: 收款钱包地址
-            amount: 支付金额
+            amount: 支付金额（参数保留但不使用，用于兼容性）
             
         Returns:
             二维码图片字节流
         """
-        # TRC20 USDT 支付链接格式
-        # tronlink://send?to=address&amount=amount&token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
-        payment_url = f"tronlink://send?to={wallet_address}&amount={amount}&token={PaymentConfig.USDT_CONTRACT}"
+        # 修改：只用纯地址，不用 tronlink:// 链接
+        # 这样用户可以用任何支持 TRC20 的钱包扫描
+        qr_content = wallet_address
         
         # 生成二维码
         qr = qrcode.QRCode(
@@ -158,7 +158,7 @@ class QRCodeGenerator:
             box_size=10,
             border=4,
         )
-        qr.add_data(payment_url)
+        qr.add_data(qr_content)
         qr.make(fit=True)
         
         # 转换为图片
@@ -762,28 +762,55 @@ class TelegramNotifier:
             logger.error(f"❌ 发送消息异常: {e}")
             return False
     
+    async def send_sticker(self, chat_id: int, sticker_id: str) -> bool:
+        """发送贴纸"""
+        try:
+            url = f"{self.api_base}/sendSticker"
+            data = {"chat_id": chat_id, "sticker": sticker_id}
+            async with self.session.post(url, json=data, timeout=10) as response:
+                return response.status == 200
+        except:
+            return False
+    
     async def notify_payment_received(self, order: PaymentOrder, tx_hash: str):
-        """通知收款成功"""
+        """通知收款成功 - 添加庆祝动画"""
         plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
         plan_name = plan.get("name", "未知套餐")
         days = plan.get("days", 0)
         
+        # 先发送庆祝贴纸（使用 Telegram 内置庆祝贴纸）
+        try:
+            # 常用的庆祝贴纸 ID
+            celebration_stickers = [
+                "CAACAgIAAxkBAAEBxxxxxx",  # 默认贴纸
+                "🎉"  # 如果没有sticker ID，使用emoji
+            ]
+            # 尝试发送贴纸，如果失败则跳过
+            for sticker in celebration_stickers:
+                try:
+                    await self.send_sticker(order.user_id, sticker)
+                    break
+                except:
+                    continue
+        except:
+            pass
+        
         # 通知用户
         user_msg = f"""
-<b>✅ 支付成功</b>
+🎉🎉🎉 <b>支付成功！</b> 🎉🎉🎉
 
-您的支付已确认！会员已自动开通。
+您的支付已确认，会员已自动开通！
 
 <b>订单信息</b>
 • 订单号: <code>{order.order_id}</code>
 • 套餐: {plan_name}
 • 金额: {order.amount:.4f} USDT
-• 会员天数: {days} 天
+• 会员天数: +{days} 天
 
 <b>交易信息</b>
 • 交易哈希: <code>{tx_hash}</code>
 
-感谢您的支持！🎉
+感谢您的支持！💎
         """
         
         await self.send_message(order.user_id, user_msg)

@@ -10997,6 +10997,7 @@ class EnhancedBot:
         self.dp.add_handler(CommandHandler("addadmin", self.add_admin_command))
         self.dp.add_handler(CommandHandler("removeadmin", self.remove_admin_command))
         self.dp.add_handler(CommandHandler("listadmins", self.list_admins_command))
+        self.dp.add_handler(CommandHandler("payment_stats", self.payment_stats_command))
         self.dp.add_handler(CommandHandler("proxy", self.proxy_command))
         self.dp.add_handler(CommandHandler("testproxy", self.test_proxy_command))
         self.dp.add_handler(CommandHandler("cleanproxy", self.clean_proxy_command))
@@ -17240,7 +17241,11 @@ class EnhancedBot:
             BEIJING_TZ = timezone(timedelta(hours=8))
             now = datetime.now(BEIJING_TZ)
             expires_at = order.expires_at.replace(tzinfo=BEIJING_TZ)
-            remaining_minutes = int((expires_at - now).total_seconds() / 60)
+            
+            # 计算剩余时间（分钟和秒）
+            remaining_seconds = (expires_at - now).total_seconds()
+            remaining_minutes = max(0, int(remaining_seconds // 60))
+            remaining_secs = max(0, int(remaining_seconds % 60))
             
             # 发送二维码和支付信息
             caption = f"""
@@ -17251,7 +17256,7 @@ class EnhancedBot:
 • 套餐: {plan_name}
 • 会员天数: {days} 天
 • 支付金额: <b>{order.amount:.4f} USDT</b>
-• 有效期: {remaining_minutes} 分钟
+• ⏱️ 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
 
 <b>收款地址</b>
 <code>{PaymentConfig.WALLET_ADDRESS}</code>
@@ -17260,7 +17265,7 @@ class EnhancedBot:
 <b>⚠️ 重要提示</b>
 1. 请使用 USDT-TRC20 转账
 2. 金额必须精确到小数点后4位
-3. 请在{remaining_minutes}分钟内完成支付
+3. 请在有效期内完成支付
 4. 支付后自动到账，无需手动确认
 
 <b>扫码支付</b>
@@ -17323,36 +17328,68 @@ class EnhancedBot:
         try:
             import sys
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from tron import PaymentDatabase, OrderManager
+            from tron import PaymentDatabase, OrderManager, OrderStatus
             
             payment_db = PaymentDatabase()
             order_manager = OrderManager(payment_db)
+            
+            # 获取订单信息以验证权限
+            order = payment_db.get_order(order_id)
+            
+            if not order:
+                query.answer("❌ 订单不存在", show_alert=True)
+                return
+            
+            if order.user_id != user_id:
+                query.answer("❌ 无权操作此订单", show_alert=True)
+                return
+            
+            if order.status.value != 'pending':
+                query.answer(f"❌ 订单状态为 {order.status.value}，无法取消", show_alert=True)
+                return
             
             # 取消订单
             success = order_manager.cancel_order(order_id)
             
             if success:
-                text = """
-<b>✅ 订单已取消</b>
+                query.answer("✅ 订单已取消", show_alert=True)
+                
+                text = """❌ <b>订单已取消</b>
 
-您可以重新创建订单。
-                """
+如需购买会员，请重新选择套餐。"""
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💎 重新购买", callback_data="usdt_payment")],
+                    [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
+                ])
+                
+                # 使用 edit_message_caption 而不是 edit_message_text
+                # 因为订单消息是图片+caption格式
+                try:
+                    query.edit_message_caption(
+                        caption=text,
+                        parse_mode='HTML',
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    logger.warning(f"编辑消息caption失败: {e}")
+                    # 如果编辑失败，尝试删除原消息并发送新消息
+                    try:
+                        query.message.delete()
+                        query.bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            parse_mode='HTML',
+                            reply_markup=keyboard
+                        )
+                    except:
+                        pass
             else:
-                text = """
-<b>❌ 取消订单失败</b>
-
-订单可能已过期或不存在。
-                """
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 返回支付菜单", callback_data="usdt_payment")]
-            ])
-            
-            self.safe_edit_message(query, text, 'HTML', keyboard)
+                query.answer("❌ 取消失败，请稍后重试", show_alert=True)
             
         except Exception as e:
             logger.error(f"取消订单失败: {e}")
-            self.safe_edit_message(query, f"❌ 操作失败: {e}", 'HTML')
+            query.answer("❌ 操作失败，请稍后重试", show_alert=True)
     
     def handle_vip_redeem(self, query):
         """处理兑换卡密"""
@@ -17921,6 +17958,98 @@ class EnhancedBot:
         ])
         
         self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def payment_stats_command(self, update: Update, context: CallbackContext):
+        """管理员支付统计命令"""
+        user_id = update.effective_user.id
+        
+        # 检查是否是管理员
+        if not self.db.is_admin(user_id):
+            update.message.reply_text("❌ 无权访问")
+            return
+        
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from tron import PaymentDatabase, OrderStatus
+            
+            payment_db = PaymentDatabase()
+            
+            # 获取统计数据
+            conn = sqlite3.connect(payment_db.db_path)
+            c = conn.cursor()
+            
+            # 总订单数
+            c.execute("SELECT COUNT(*) FROM orders")
+            total_orders = c.fetchone()[0]
+            
+            # 已完成订单
+            c.execute("SELECT COUNT(*) FROM orders WHERE status = ?", (OrderStatus.COMPLETED.value,))
+            completed_orders = c.fetchone()[0]
+            
+            # 总收入
+            c.execute("SELECT SUM(amount) FROM orders WHERE status = ?", (OrderStatus.COMPLETED.value,))
+            total_revenue = c.fetchone()[0] or 0
+            
+            # 今日订单
+            today = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+            c.execute("SELECT COUNT(*) FROM orders WHERE status = ? AND created_at LIKE ?", 
+                      (OrderStatus.COMPLETED.value, f"{today}%"))
+            today_orders = c.fetchone()[0]
+            
+            # 今日收入
+            c.execute("SELECT SUM(amount) FROM orders WHERE status = ? AND created_at LIKE ?",
+                      (OrderStatus.COMPLETED.value, f"{today}%"))
+            today_revenue = c.fetchone()[0] or 0
+            
+            # 待支付订单
+            c.execute("SELECT COUNT(*) FROM orders WHERE status = ?", (OrderStatus.PENDING.value,))
+            pending_orders = c.fetchone()[0]
+            
+            # 已取消订单
+            c.execute("SELECT COUNT(*) FROM orders WHERE status = ?", (OrderStatus.CANCELLED.value,))
+            cancelled_orders = c.fetchone()[0]
+            
+            # 已过期订单
+            c.execute("SELECT COUNT(*) FROM orders WHERE status = ?", (OrderStatus.EXPIRED.value,))
+            expired_orders = c.fetchone()[0]
+            
+            conn.close()
+            
+            # 计算转化率
+            completion_rate = (completed_orders / total_orders * 100) if total_orders > 0 else 0
+            
+            stats_text = f"""
+📊 <b>支付统计面板</b>
+
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+<b>📈 总体统计</b>
+• 总订单数: {total_orders}
+• 已完成订单: {completed_orders}
+• 待支付订单: {pending_orders}
+• 已取消订单: {cancelled_orders}
+• 已过期订单: {expired_orders}
+• 💰 总收入: <b>{total_revenue:.4f} USDT</b>
+
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+<b>📅 今日统计 ({today})</b>
+• 今日订单: {today_orders}
+• 💰 今日收入: <b>{today_revenue:.4f} USDT</b>
+
+<b>━━━━━━━━━━━━━━━━━━━━</b>
+<b>📉 转化分析</b>
+• 完成率: {completion_rate:.1f}%
+• 取消率: {(cancelled_orders/total_orders*100) if total_orders > 0 else 0:.1f}%
+• 过期率: {(expired_orders/total_orders*100) if total_orders > 0 else 0:.1f}%
+
+<i>💡 提示: 使用 /start 查看主菜单</i>
+            """
+            
+            update.message.reply_text(stats_text, parse_mode='HTML')
+            
+        except Exception as e:
+            logger.error(f"获取支付统计失败: {e}")
+            update.message.reply_text(f"❌ 获取统计失败: {e}")
     
     def handle_admin_revoke_cancel(self, query):
         """取消撤销会员"""
