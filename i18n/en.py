@@ -2881,4 +2881,7 @@ TEXTS = {
     'payment_plan_name_30d': '30-Day Membership',
     'payment_plan_name_120d': '120-Day Membership',
     'payment_plan_name_365d': '365-Day Membership',
+    
+    # VIP menu button
+    'btn_usdt_payment': '💎 USDT Recharge',
 }

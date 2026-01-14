@@ -2882,4 +2882,7 @@ TEXTS = {
     'payment_plan_name_30d': '30天会员',
     'payment_plan_name_120d': '120天会员',
     'payment_plan_name_365d': '365天会员',
+    
+    # VIP菜单按钮
+    'btn_usdt_payment': '💎 USDT充值购买',
 }

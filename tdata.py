@@ -17145,7 +17145,7 @@ class EnhancedBot:
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(user_id, 'member_btn_redeem'), callback_data="vip_redeem")],
-            [InlineKeyboardButton("💎 USDT充值购买", callback_data="usdt_payment")],
+            [InlineKeyboardButton(t(user_id, 'btn_usdt_payment'), callback_data="usdt_payment")],
             [InlineKeyboardButton(f"🔙 {t(user_id, 'btn_back_to_menu')}", callback_data="back_to_main")]
         ])
         
