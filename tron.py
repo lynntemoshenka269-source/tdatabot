@@ -990,8 +990,17 @@ class TelegramNotifier:
         
         user_id = order.user_id
         plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
-        plan_name = plan.get("name", "未知套餐")
         days = plan.get("days", 0)
+        
+        # 获取套餐名称 - 使用 i18n
+        plan_name_key_map = {
+            'plan_7d': 'payment_plan_name_7d',
+            'plan_30d': 'payment_plan_name_30d',
+            'plan_120d': 'payment_plan_name_120d',
+            'plan_365d': 'payment_plan_name_365d',
+        }
+        plan_name_key = plan_name_key_map.get(order.plan_id, 'payment_plan_name_7d')
+        plan_name = t(user_id, plan_name_key)
         
         # 1. 删除原消息
         try:
@@ -1120,7 +1129,10 @@ class TelegramNotifier:
                     [InlineKeyboardButton(view_tx_btn, url=f"https://tronscan.org/#/transaction/{tx_hash}")]
                 ])
                 
-                await self.send_message_with_keyboard(int(self.notify_chat_id), admin_msg, keyboard)
+                # 转换为 dict 格式
+                keyboard_dict = keyboard.to_dict()
+                
+                await self.send_message_with_keyboard(int(self.notify_chat_id), admin_msg, keyboard_dict)
             except Exception as e:
                 logger.error(f"发送管理员通知失败: {e}")
                 # 如果带按钮的消息失败，至少发送纯文本消息

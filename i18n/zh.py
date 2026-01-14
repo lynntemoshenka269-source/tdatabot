@@ -2863,4 +2863,23 @@ TEXTS = {
     'payment_status_completed': '已完成',
     'payment_status_expired': '已过期',
     'payment_status_cancelled': '已取消',
+    
+    # 支付菜单详细信息
+    'payment_menu_package_info': '💰 套餐说明',
+    'payment_menu_info_1': '• 支持 USDT-TRC20 支付',
+    'payment_menu_info_2': '• 金额随机小数，避免冲突',
+    'payment_menu_info_3': '• 订单有效期 10 分钟',
+    'payment_menu_info_4': '• 支付后自动到账',
+    'payment_menu_security': '🔒 安全保障',
+    'payment_menu_security_1': '• 20次区块确认',
+    'payment_menu_security_2': '• 官方USDT合约验证',
+    'payment_menu_security_3': '• 精确金额匹配',
+    'payment_menu_security_4': '• 防重复发放',
+    'payment_menu_select_plan': '请选择套餐：',
+    
+    # 套餐名称
+    'payment_plan_name_7d': '7天会员',
+    'payment_plan_name_30d': '30天会员',
+    'payment_plan_name_120d': '120天会员',
+    'payment_plan_name_365d': '365天会员',
 }

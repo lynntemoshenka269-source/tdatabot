@@ -2862,4 +2862,23 @@ TEXTS = {
     'payment_status_completed': 'Completed',
     'payment_status_expired': 'Expired',
     'payment_status_cancelled': 'Cancelled',
+    
+    # Payment menu details
+    'payment_menu_package_info': '💰 Package Information',
+    'payment_menu_info_1': '• Supports USDT-TRC20 payment',
+    'payment_menu_info_2': '• Random decimals to avoid conflicts',
+    'payment_menu_info_3': '• Order valid for 10 minutes',
+    'payment_menu_info_4': '• Automatic processing after payment',
+    'payment_menu_security': '🔒 Security',
+    'payment_menu_security_1': '• 20 block confirmations',
+    'payment_menu_security_2': '• Official USDT contract verification',
+    'payment_menu_security_3': '• Exact amount matching',
+    'payment_menu_security_4': '• Duplicate payment prevention',
+    'payment_menu_select_plan': 'Select a plan:',
+    
+    # Plan names
+    'payment_plan_name_7d': '7-Day Membership',
+    'payment_plan_name_30d': '30-Day Membership',
+    'payment_plan_name_120d': '120-Day Membership',
+    'payment_plan_name_365d': '365-Day Membership',
 }

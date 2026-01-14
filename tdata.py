@@ -17232,24 +17232,37 @@ class EnhancedBot:
         plan_365d = t(user_id, 'payment_plan_365d')
         back_center = t(user_id, 'member_btn_back_center')
         
+        # 套餐说明和安全保障
+        package_info = t(user_id, 'payment_menu_package_info')
+        info_1 = t(user_id, 'payment_menu_info_1')
+        info_2 = t(user_id, 'payment_menu_info_2')
+        info_3 = t(user_id, 'payment_menu_info_3')
+        info_4 = t(user_id, 'payment_menu_info_4')
+        security = t(user_id, 'payment_menu_security')
+        security_1 = t(user_id, 'payment_menu_security_1')
+        security_2 = t(user_id, 'payment_menu_security_2')
+        security_3 = t(user_id, 'payment_menu_security_3')
+        security_4 = t(user_id, 'payment_menu_security_4')
+        select_plan = t(user_id, 'payment_menu_select_plan')
+        
         text = f"""
 <b>{menu_title}</b>
 
 {menu_desc}
 
-<b>💰 套餐说明</b>
-• 支持 USDT-TRC20 支付
-• 金额随机小数，避免冲突
-• 订单有效期 10 分钟
-• 支付后自动到账
+<b>{package_info}</b>
+{info_1}
+{info_2}
+{info_3}
+{info_4}
 
-<b>🔒 安全保障</b>
-• 20次区块确认
-• 官方USDT合约验证
-• 精确金额匹配
-• 防重复发放
+<b>{security}</b>
+{security_1}
+{security_2}
+{security_3}
+{security_4}
 
-请选择套餐：
+{select_plan}
         """
         
         keyboard = InlineKeyboardMarkup([
@@ -17297,8 +17310,17 @@ class EnhancedBot:
             
             # 获取套餐信息
             plan = PaymentConfig.PAYMENT_PLANS.get(plan_id, {})
-            plan_name = plan.get("name", "未知套餐")
             days = plan.get("days", 0)
+            
+            # 获取套餐名称 - 使用 i18n
+            plan_name_key_map = {
+                'plan_7d': 'payment_plan_name_7d',
+                'plan_30d': 'payment_plan_name_30d',
+                'plan_120d': 'payment_plan_name_120d',
+                'plan_365d': 'payment_plan_name_365d',
+            }
+            plan_name_key = plan_name_key_map.get(plan_id, 'payment_plan_name_7d')
+            plan_name = t(user_id, plan_name_key)
             
             # 生成二维码
             qr_bytes = QRCodeGenerator.generate_payment_qr(
