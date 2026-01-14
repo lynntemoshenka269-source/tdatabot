@@ -17267,8 +17267,8 @@ class EnhancedBot:
             try:
                 from telegram import InputFile
                 photo = InputFile(BytesIO(qr_bytes), filename="payment_qr.png")
-                context = query.message._telegram_bot._context
-                context.bot.send_photo(
+                # 使用bot实例发送图片
+                query.message.bot.send_photo(
                     chat_id=user_id,
                     photo=photo,
                     caption=caption,
@@ -17277,7 +17277,14 @@ class EnhancedBot:
             except Exception as e:
                 logger.error(f"发送二维码失败: {e}")
                 # 如果发送图片失败，至少发送文本信息
-                self.safe_send_message(query.message, caption, 'HTML')
+                try:
+                    query.message.bot.send_message(
+                        chat_id=user_id,
+                        text=caption,
+                        parse_mode='HTML'
+                    )
+                except Exception as e2:
+                    logger.error(f"发送文本也失败: {e2}")
             
             # 更新原消息
             keyboard = InlineKeyboardMarkup([

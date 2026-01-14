@@ -1,0 +1,14 @@
+# USDT-TRC20 支付系统依赖
+# 安装命令: pip install -r requirements_payment.txt
+
+# 二维码生成
+qrcode[pil]>=7.3.1
+
+# 图片处理
+Pillow>=9.0.0
+
+# HTTP异步请求
+aiohttp>=3.8.0
+
+# Base58编解码（用于地址验证）
+base58>=2.1.0
