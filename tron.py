@@ -723,48 +723,69 @@ class TronUSDTMonitor:
 class TelegramNotifier:
     """Telegram通知器"""
     
-    def __init__(self, bot_token: str, notify_chat_id: str = ""):
-        self.bot_token = bot_token
-        self.notify_chat_id = notify_chat_id
-        self.api_base = f"https://api.telegram.org/bot{bot_token}"
-        self.session: Optional[aiohttp.ClientSession] = None
+    def __init__(self):
+        self.bot_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+        if not self.bot_token:
+            logger.error("❌ BOT_TOKEN 未配置！")
+        self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
+        self.session = None
+        self.notify_chat_id = os.getenv("NOTIFY_CHAT_ID") or os.getenv("TELEGRAM_NOTIFY_CHAT_ID")
     
-    async def init_session(self):
-        """初始化HTTP会话"""
-        if not self.session:
+    async def ensure_session(self):
+        """确保 session 已初始化"""
+        if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
     
-    async def close_session(self):
-        """关闭HTTP会话"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-    
-    async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    async def send_message(self, chat_id: int, text: str) -> bool:
         """发送消息"""
-        await self.init_session()
-        
         try:
+            if not self.bot_token:
+                logger.error("❌ BOT_TOKEN 未配置，无法发送消息")
+                return False
+            
+            await self.ensure_session()
+            
             url = f"{self.api_base}/sendMessage"
             data = {
                 "chat_id": chat_id,
                 "text": text,
-                "parse_mode": parse_mode
+                "parse_mode": "HTML"
             }
             
-            async with self.session.post(url, json=data, timeout=10) as response:
-                if response.status == 200:
+            logger.info(f"📤 发送消息到 {chat_id}...")
+            
+            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                result = await response.json()
+                
+                if result.get("ok"):
+                    logger.info(f"✅ 消息发送成功: {chat_id}")
                     return True
                 else:
-                    logger.error(f"❌ 发送消息失败: {response.status}")
+                    error_desc = result.get("description", "未知错误")
+                    logger.error(f"❌ Telegram API 错误: {error_desc}")
                     return False
-        except Exception as e:
-            logger.error(f"❌ 发送消息异常: {e}")
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"❌ 网络请求失败: {type(e).__name__}: {e}")
             return False
+        except asyncio.TimeoutError:
+            logger.error(f"❌ 发送消息超时: {chat_id}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ 发送消息异常: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    async def close(self):
+        """关闭 session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
     
     async def send_sticker(self, chat_id: int, sticker_id: str) -> bool:
         """发送贴纸"""
         try:
+            await self.ensure_session()
             url = f"{self.api_base}/sendSticker"
             data = {"chat_id": chat_id, "sticker": sticker_id}
             async with self.session.post(url, json=data, timeout=10) as response:
@@ -845,12 +866,9 @@ class TronPaymentService:
         self.order_manager = OrderManager(self.db)
         self.monitor = TronUSDTMonitor(
             PaymentConfig.WALLET_ADDRESS,
-            PaymentConfig. TRONGRID_API_KEYS  # 传入 Key 列表
+            PaymentConfig.TRONGRID_API_KEYS  # 传入 Key 列表
         )
-        self.notifier = TelegramNotifier(
-            PaymentConfig. TELEGRAM_BOT_TOKEN,
-            PaymentConfig. TELEGRAM_NOTIFY_CHAT_ID
-        )
+        self.notifier = TelegramNotifier()
         self.running = False
     
     async def start(self):
@@ -998,7 +1016,7 @@ class TronPaymentService:
         logger.info("🛑 正在停止服务...")
         self.running = False
         await self.monitor.close_session()
-        await self.notifier.close_session()
+        await self.notifier.close()
         logger.info("✅ 服务已停止")
     
     async def grant_membership(self, order: PaymentOrder) -> bool:
