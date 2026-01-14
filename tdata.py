@@ -17306,8 +17306,8 @@ class EnhancedBot:
 • 订单号: <code>{order.order_id}</code>
 • 套餐: {plan_name}
 • 会员天数: {days} 天
-• 支付金额: <b>{order.amount:.4f} USDT</b>
-• ⏱️ 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
+• 支付金额: <code>{order.amount:.4f}</code>USDT
+• 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
 
 <b>收款地址</b>
 <code>{PaymentConfig.WALLET_ADDRESS}</code>
