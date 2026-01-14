@@ -202,6 +202,13 @@ class PaymentDatabase:
             )
         """)
         
+        # 添加 message_id 列（如果不存在）
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN message_id INTEGER")
+        except sqlite3.OperationalError:
+            # 列已存在，忽略
+            pass
+        
         # 交易记录表
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -452,6 +459,35 @@ class PaymentDatabase:
         except Exception as e:
             logger.error(f"❌ 检查金额失败: {e}")
             return True  # 出错时保守处理
+    
+    def update_order_message_id(self, order_id: str, message_id: int):
+        """保存订单消息ID"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("""
+                UPDATE orders 
+                SET message_id = ?
+                WHERE order_id = ?
+            """, (message_id, order_id))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ 订单消息ID已保存: {order_id} -> {message_id}")
+        except Exception as e:
+            logger.error(f"❌ 保存消息ID失败: {e}")
+    
+    def get_order_message_id(self, order_id: str) -> Optional[int]:
+        """获取订单消息ID"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("SELECT message_id FROM orders WHERE order_id = ?", (order_id,))
+            row = c.fetchone()
+            conn.close()
+            return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.error(f"❌ 获取消息ID失败: {e}")
+            return None
 
 
 # ================================
@@ -723,13 +759,14 @@ class TronUSDTMonitor:
 class TelegramNotifier:
     """Telegram通知器"""
     
-    def __init__(self):
+    def __init__(self, db: 'PaymentDatabase' = None):
         self.bot_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
         if not self.bot_token:
             logger.error("❌ BOT_TOKEN 未配置！")
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
         self.session = None
         self.notify_chat_id = os.getenv("NOTIFY_CHAT_ID") or os.getenv("TELEGRAM_NOTIFY_CHAT_ID")
+        self.db = db  # 保存数据库引用以获取 message_id
     
     async def ensure_session(self):
         """确保 session 已初始化"""
@@ -793,17 +830,61 @@ class TelegramNotifier:
         except:
             return False
     
-    async def notify_payment_received(self, order: PaymentOrder, tx_hash: str):
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        """删除消息"""
+        try:
+            await self.ensure_session()
+            url = f"{self.api_base}/deleteMessage"
+            data = {"chat_id": chat_id, "message_id": message_id}
+            async with self.session.post(url, json=data, timeout=10) as response:
+                result = await response.json()
+                if result.get("ok"):
+                    logger.info(f"✅ 已删除消息: {message_id}")
+                    return True
+                else:
+                    logger.warning(f"删除消息失败: {result}")
+                    return False
+        except Exception as e:
+            logger.warning(f"删除消息异常: {e}")
+            return False
+    
+    async def send_message_with_keyboard(self, chat_id: int, text: str, keyboard) -> bool:
+        """发送带键盘的消息"""
+        try:
+            await self.ensure_session()
+            url = f"{self.api_base}/sendMessage"
+            data = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "reply_markup": keyboard.to_dict() if hasattr(keyboard, 'to_dict') else keyboard
+            }
+            async with self.session.post(url, json=data, timeout=30) as response:
+                result = await response.json()
+                return result.get("ok", False)
+        except Exception as e:
+            logger.error(f"发送带键盘消息失败: {e}")
+            return False
+    
+    async def notify_payment_received(self, order: PaymentOrder, tx_hash: str, tx_info: dict = None):
         """通知收款成功 - 添加庆祝动画"""
         plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
         plan_name = plan.get("name", "未知套餐")
         days = plan.get("days", 0)
         
+        # 1. 先删除原订单消息（包含二维码）
+        try:
+            message_id = self.db.get_order_message_id(order.order_id)
+            if message_id:
+                await self.delete_message(order.user_id, message_id)
+        except Exception as e:
+            logger.warning(f"删除订单消息失败: {e}")
+        
         # 先发送庆祝贴纸（使用 Telegram 内置庆祝贴纸）
         try:
             # 常用的庆祝贴纸 ID
             celebration_stickers = [
-                "CAACAgIAAxkBAAEBxxxxxx",  # 默认贴纸
+                "CAACAgIAAxkBAAFAr4hpZ4gcZrgcsdUcW-1DFfn8MqzMcgAC1hgAAt_skUmRnB_mBcJtujgE",  # 默认贴纸
                 "🎉"  # 如果没有sticker ID，使用emoji
             ]
             # 尝试发送贴纸，如果失败则跳过
@@ -816,6 +897,29 @@ class TelegramNotifier:
         except:
             pass
         
+        # 计算会员到期时间
+        from datetime import datetime, timedelta, timezone
+        BEIJING_TZ = timezone(timedelta(hours=8))
+        
+        # 从数据库获取会员到期时间
+        expiry_time = "未知"
+        try:
+            conn = sqlite3.connect(PaymentConfig.MAIN_DB)
+            c = conn.cursor()
+            c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
+            row = c.fetchone()
+            conn.close()
+            
+            if row and row[0]:
+                try:
+                    # 数据库中存储的是字符串格式: "YYYY-MM-DD HH:MM:SS"
+                    expiry = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                    expiry_time = expiry.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    expiry_time = row[0]
+        except Exception as e:
+            logger.warning(f"获取会员到期时间失败: {e}")
+        
         # 通知用户
         user_msg = f"""
 🎉🎉🎉 <b>支付成功！</b> 🎉🎉🎉
@@ -827,9 +931,7 @@ class TelegramNotifier:
 • 套餐: {plan_name}
 • 金额: {order.amount:.4f} USDT
 • 会员天数: +{days} 天
-
-<b>交易信息</b>
-• 交易哈希: <code>{tx_hash}</code>
+• 会员到期: {expiry_time}
 
 感谢您的支持！💎
         """
@@ -838,8 +940,22 @@ class TelegramNotifier:
         
         # 通知管理员
         if self.notify_chat_id:
+            # 获取地址信息（如果有）
+            from_address = "未知"
+            to_address = PaymentConfig.WALLET_ADDRESS
+            
+            if tx_info:
+                from_address = tx_info.get("from_address", "未知")
+                to_address = tx_info.get("to_address", to_address)
+            
+            # 地址脱敏显示
+            def mask_address(addr):
+                if len(addr) > 15:
+                    return f"{addr[:8]}*****{addr[-8:]}"
+                return addr
+            
             admin_msg = f"""
-<b>💰 收到新支付</b>
+💰 <b>收到新充值订单</b>
 
 <b>订单信息</b>
 • 订单号: <code>{order.order_id}</code>
@@ -847,12 +963,27 @@ class TelegramNotifier:
 • 套餐: {plan_name}
 • 金额: {order.amount:.4f} USDT
 • 会员天数: {days} 天
+• 会员到期: {expiry_time}
 
-<b>交易信息</b>
-• 交易哈希: <code>{tx_hash}</code>
-• 查看: https://tronscan.org/#/transaction/{tx_hash}
+<b>地址信息</b>
+✅ 接收地址: <code>{mask_address(to_address)}</code>
+🅾️ 发送地址: <code>{mask_address(from_address)}</code>
             """
-            await self.send_message(int(self.notify_chat_id), admin_msg)
+            
+            # 发送带按钮的消息
+            try:
+                # 导入 InlineKeyboardMarkup 和 InlineKeyboardButton（需要在函数内导入）
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔍 查看交易明细", url=f"https://tronscan.org/#/transaction/{tx_hash}")]
+                ])
+                
+                await self.send_message_with_keyboard(int(self.notify_chat_id), admin_msg, keyboard)
+            except Exception as e:
+                logger.error(f"发送管理员通知失败: {e}")
+                # 如果带按钮的消息失败，至少发送纯文本消息
+                await self.send_message(int(self.notify_chat_id), admin_msg)
 
 # ================================
 # 主服务类
@@ -868,7 +999,7 @@ class TronPaymentService:
             PaymentConfig.WALLET_ADDRESS,
             PaymentConfig.TRONGRID_API_KEYS  # 传入 Key 列表
         )
-        self.notifier = TelegramNotifier()
+        self.notifier = TelegramNotifier(self.db)  # 传入数据库引用
         self.running = False
     
     async def start(self):
@@ -987,10 +1118,15 @@ class TronPaymentService:
                                     OrderStatus.COMPLETED
                                 )
                                 
-                                # 发送通知
+                                # 发送通知 - 传递交易信息
+                                tx_info_dict = {
+                                    "from_address": tx.from_address,
+                                    "to_address": tx.to_address
+                                }
                                 await self.notifier.notify_payment_received(
                                     matched_order,
-                                    tx.tx_hash
+                                    tx.tx_hash,
+                                    tx_info_dict
                                 )
                             
                             # 标记交易已处理

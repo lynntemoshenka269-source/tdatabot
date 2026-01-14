@@ -17306,8 +17306,8 @@ class EnhancedBot:
 • 订单号: <code>{order.order_id}</code>
 • 套餐: {plan_name}
 • 会员天数: {days} 天
-• 支付金额: <b>{order.amount:.4f} USDT</b>
-• ⏱️ 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
+• 支付金额: <code>{order.amount:.4f}</code>USDT
+• 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
 
 <b>收款地址</b>
 <code>{PaymentConfig.WALLET_ADDRESS}</code>
@@ -17333,13 +17333,16 @@ class EnhancedBot:
                     [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
                 ])
                 # 使用bot实例发送图片
-                query.message.bot.send_photo(
+                order_msg = query.message.bot.send_photo(
                     chat_id=user_id,
                     photo=photo,
                     caption=caption,
                     parse_mode='HTML',
                     reply_markup=keyboard
                 )
+                # 保存 message_id 到数据库
+                payment_db.update_order_message_id(order.order_id, order_msg.message_id)
+                logger.info(f"✅ 订单消息ID已保存: {order.order_id} -> {order_msg.message_id}")
             except Exception as e:
                 logger.error(f"发送二维码失败: {e}")
                 # 如果发送图片失败，至少发送文本信息
@@ -17405,11 +17408,20 @@ class EnhancedBot:
             if success:
                 query.answer("✅ 订单已取消", show_alert=True)
                 
-                # 删除原消息（包含二维码图片）
+                # 删除原订单消息（使用保存的 message_id）
+                try:
+                    message_id = payment_db.get_order_message_id(order_id)
+                    if message_id:
+                        query.bot.delete_message(chat_id=user_id, message_id=message_id)
+                        logger.info(f"✅ 已删除订单消息: {message_id}")
+                except Exception as e:
+                    logger.warning(f"删除订单消息失败: {e}")
+                
+                # 同时尝试删除当前回调消息
                 try:
                     query.message.delete()
                 except Exception as e:
-                    logger.warning(f"删除消息失败: {e}")
+                    logger.warning(f"删除当前消息失败: {e}")
                 
                 # 发送新的纯文本消息
                 try:
