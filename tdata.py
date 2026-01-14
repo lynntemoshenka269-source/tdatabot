@@ -17181,21 +17181,30 @@ class EnhancedBot:
                 expires_at = existing_order.expires_at.replace(tzinfo=BEIJING_TZ)
                 
                 if now < expires_at:
-                    # 有未过期订单，提示用户
+                    # 有未过期订单，提示用户 - 使用 i18n
                     remaining_minutes = int((expires_at - now).total_seconds() / 60)
+                    
+                    error_existing = t(user_id, 'payment_error_existing_order')
+                    order_id_label = t(user_id, 'payment_order_id')
+                    amount_label = t(user_id, 'payment_amount')
+                    minutes_label = t(user_id, 'payment_minutes')
+                    
                     text = f"""
-<b>⚠️ 您已有待支付订单</b>
+<b>⚠️ {error_existing}</b>
 
-订单号: <code>{existing_order.order_id}</code>
-金额: <b>{existing_order.amount:.4f} USDT</b>
-剩余时间: <b>{remaining_minutes} 分钟</b>
+{order_id_label}: <code>{existing_order.order_id}</code>
+{amount_label}: <b>{existing_order.amount:.4f} USDT</b>
+剩余时间: <b>{remaining_minutes} {minutes_label}</b>
 
 请先完成或取消当前订单。
                     """
                     
+                    cancel_btn = t(user_id, 'btn_cancel_order')
+                    back_center_btn = t(user_id, 'member_btn_back_center')
+                    
                     keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("❌ 取消当前订单", callback_data=f"cancel_order_{existing_order.order_id}")],
-                        [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
+                        [InlineKeyboardButton(cancel_btn, callback_data=f"cancel_order_{existing_order.order_id}")],
+                        [InlineKeyboardButton(back_center_btn, callback_data="vip_menu")]
                     ])
                     
                     # 如果删除了图片，发送新消息；否则编辑现有消息
@@ -17214,10 +17223,19 @@ class EnhancedBot:
         except Exception as e:
             logger.error(f"检查待支付订单失败: {e}")
         
-        text = """
-<b>💎 USDT充值购买会员</b>
+        # 显示支付菜单 - 使用 i18n
+        menu_title = t(user_id, 'payment_menu_title')
+        menu_desc = t(user_id, 'payment_menu_desc')
+        plan_7d = t(user_id, 'payment_plan_7d')
+        plan_30d = t(user_id, 'payment_plan_30d')
+        plan_120d = t(user_id, 'payment_plan_120d')
+        plan_365d = t(user_id, 'payment_plan_365d')
+        back_center = t(user_id, 'member_btn_back_center')
+        
+        text = f"""
+<b>{menu_title}</b>
 
-选择您想要购买的套餐：
+{menu_desc}
 
 <b>💰 套餐说明</b>
 • 支持 USDT-TRC20 支付
@@ -17235,11 +17253,11 @@ class EnhancedBot:
         """
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("7天会员 - 5 USDT", callback_data="usdt_plan_7d")],
-            [InlineKeyboardButton("30天会员 - 15 USDT", callback_data="usdt_plan_30d")],
-            [InlineKeyboardButton("120天会员 - 50 USDT", callback_data="usdt_plan_120d")],
-            [InlineKeyboardButton("365天会员 - 100 USDT", callback_data="usdt_plan_365d")],
-            [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
+            [InlineKeyboardButton(plan_7d, callback_data="usdt_plan_7d")],
+            [InlineKeyboardButton(plan_30d, callback_data="usdt_plan_30d")],
+            [InlineKeyboardButton(plan_120d, callback_data="usdt_plan_120d")],
+            [InlineKeyboardButton(plan_365d, callback_data="usdt_plan_365d")],
+            [InlineKeyboardButton(f"🔙 {back_center}", callback_data="vip_menu")]
         ])
         
         # 如果删除了图片，发送新消息；否则编辑现有消息
@@ -17273,7 +17291,8 @@ class EnhancedBot:
             order = order_manager.create_payment_order(user_id, plan_id)
             
             if not order:
-                self.safe_edit_message(query, "❌ 创建订单失败，请稍后重试", 'HTML')
+                error_create_failed = t(user_id, 'payment_error_create_failed')
+                self.safe_edit_message(query, error_create_failed, 'HTML')
                 return
             
             # 获取套餐信息
@@ -17298,39 +17317,61 @@ class EnhancedBot:
             remaining_minutes = max(0, int(remaining_seconds // 60))
             remaining_secs = max(0, int(remaining_seconds % 60))
             
+            # 使用 i18n 构建支付信息
+            order_info_title = t(user_id, 'payment_order_info_title')
+            order_id_label = t(user_id, 'payment_order_id')
+            plan_label = t(user_id, 'payment_plan')
+            days_label = t(user_id, 'payment_days')
+            amount_label = t(user_id, 'payment_amount')
+            valid_time_label = t(user_id, 'payment_valid_time')
+            minutes_label = t(user_id, 'payment_minutes')
+            seconds_label = t(user_id, 'payment_seconds')
+            wallet_addr_label = t(user_id, 'payment_wallet_address')
+            addr_click_copy = t(user_id, 'payment_address_click_copy')
+            important_notice = t(user_id, 'payment_important_notice')
+            notice_1 = t(user_id, 'payment_notice_1')
+            notice_2 = t(user_id, 'payment_notice_2')
+            notice_3 = t(user_id, 'payment_notice_3')
+            notice_4 = t(user_id, 'payment_notice_4')
+            scan_qr = t(user_id, 'payment_scan_qr')
+            scan_desc = t(user_id, 'payment_scan_desc')
+            
             # 发送二维码和支付信息
             caption = f"""
-<b>💳 支付订单</b>
+<b>💳 {order_info_title}</b>
 
-<b>订单信息</b>
-• 订单号: <code>{order.order_id}</code>
-• 套餐: {plan_name}
-• 会员天数: {days} 天
-• 支付金额: <code>{order.amount:.4f}</code>USDT
-• 有效期: <b>{remaining_minutes}分{remaining_secs}秒</b>
+<b>{order_info_title}</b>
+• {order_id_label}: <code>{order.order_id}</code>
+• {plan_label}: {plan_name}
+• {days_label}: {days} 天
+• {amount_label}: <code>{order.amount:.4f}</code>USDT
+• {valid_time_label}: <b>{remaining_minutes}{minutes_label}{remaining_secs}{seconds_label}</b>
 
-<b>收款地址</b>
+<b>{wallet_addr_label}</b>
 <code>{PaymentConfig.WALLET_ADDRESS}</code>
-（点击可复制）
+{addr_click_copy}
 
-<b>⚠️ 重要提示</b>
-1. 请使用 USDT-TRC20 转账
-2. 金额必须精确到小数点后4位
-3. 请在有效期内完成支付
-4. 支付后自动到账，无需手动确认
+<b>{important_notice}</b>
+{notice_1}
+{notice_2}
+{notice_3}
+{notice_4}
 
-<b>扫码支付</b>
-使用支持TRC20的钱包扫描下方二维码
+<b>{scan_qr}</b>
+{scan_desc}
             """
             
             # 发送二维码图片
             try:
                 from telegram import InputFile
                 photo = InputFile(BytesIO(qr_bytes), filename="payment_qr.png")
-                # 添加取消订单按钮
+                # 添加取消订单按钮 - 使用 i18n
+                cancel_btn = t(user_id, 'btn_cancel_order')
+                back_main_btn = t(user_id, 'btn_back_main_menu')
+                
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ 取消订单", callback_data=f"cancel_order:{order.order_id}")],
-                    [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
+                    [InlineKeyboardButton(cancel_btn, callback_data=f"cancel_order:{order.order_id}")],
+                    [InlineKeyboardButton(back_main_btn, callback_data="back_to_main")]
                 ])
                 # 使用bot实例发送图片
                 order_msg = query.message.bot.send_photo(
@@ -17355,24 +17396,29 @@ class EnhancedBot:
                 except Exception as e2:
                     logger.error(f"发送文本也失败: {e2}")
             
-            # 更新原消息
+            # 更新原消息 - 使用 i18n
+            back_payment_btn = t(user_id, 'btn_back_payment_menu')
+            order_created = t(user_id, 'payment_order_created')
+            order_info = t(user_id, 'payment_order_info')
+            
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ 取消订单", callback_data=f"cancel_order_{order.order_id}")],
-                [InlineKeyboardButton("🔙 返回支付菜单", callback_data="usdt_payment")]
+                [InlineKeyboardButton(cancel_btn, callback_data=f"cancel_order_{order.order_id}")],
+                [InlineKeyboardButton(back_payment_btn, callback_data="usdt_payment")]
             ])
             
             text = f"""
-<b>✅ 订单已创建</b>
+<b>{order_created}</b>
 
-订单号: <code>{order.order_id}</code>
-请查看上方支付信息完成支付
+{order_id_label}: <code>{order.order_id}</code>
+{order_info}
             """
             
             self.safe_edit_message(query, text, 'HTML', keyboard)
             
         except Exception as e:
             logger.error(f"处理套餐选择失败: {e}")
-            self.safe_edit_message(query, f"❌ 创建订单失败: {e}", 'HTML')
+            error_msg = t(user_id, 'payment_error_create_failed')
+            self.safe_edit_message(query, f"{error_msg}: {e}", 'HTML')
     
     def handle_cancel_order(self, query, order_id: str):
         """处理取消订单"""
@@ -17391,7 +17437,8 @@ class EnhancedBot:
             order = payment_db.get_order(order_id)
             
             if not order:
-                query.answer("❌ 订单不存在", show_alert=True)
+                error_not_found = t(user_id, 'payment_error_not_found')
+                query.answer(error_not_found, show_alert=True)
                 return
             
             if order.user_id != user_id:
@@ -17406,7 +17453,8 @@ class EnhancedBot:
             success = order_manager.cancel_order(order_id)
             
             if success:
-                query.answer("✅ 订单已取消", show_alert=True)
+                order_cancelled = t(user_id, 'payment_order_cancelled')
+                query.answer(order_cancelled, show_alert=True)
                 
                 # 删除原订单消息（使用保存的 message_id）
                 try:
@@ -17423,23 +17471,31 @@ class EnhancedBot:
                 except Exception as e:
                     logger.warning(f"删除当前消息失败: {e}")
                 
-                # 发送新的纯文本消息
+                # 发送新的纯文本消息 - 使用 i18n
                 try:
                     from telegram import Bot
                     bot = query.bot if hasattr(query, 'bot') else Bot(token=os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"))
                     
+                    cancelled_title = t(user_id, 'payment_order_cancelled_title')
+                    order_id_label = t(user_id, 'payment_order_id')
+                    status_label = t(user_id, 'payment_status')
+                    cancelled_status = t(user_id, 'payment_order_cancelled_status')
+                    repurchase_hint = t(user_id, 'payment_repurchase_hint')
+                    repurchase_btn = t(user_id, 'btn_repurchase')
+                    back_main_btn = t(user_id, 'btn_back_main_menu')
+                    
                     text = f"""
-❌ <b>订单已取消</b>
+❌ <b>{cancelled_title}</b>
 
-• 订单号: <code>{order_id}</code>
-• 状态: 已取消
+• {order_id_label}: <code>{order_id}</code>
+• {status_label}: {cancelled_status}
 
-如需购买会员，请重新选择套餐。
+{repurchase_hint}
                     """
                     
                     keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("💎 重新购买", callback_data="usdt_payment")],
-                        [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
+                        [InlineKeyboardButton(repurchase_btn, callback_data="usdt_payment")],
+                        [InlineKeyboardButton(back_main_btn, callback_data="back_to_main")]
                     ])
                     
                     bot.send_message(
