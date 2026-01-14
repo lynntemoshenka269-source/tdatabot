@@ -23,7 +23,6 @@ import random
 import logging
 from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 文件
-
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -44,22 +43,23 @@ class PaymentConfig:
     USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
     
     # 收款钱包地址（从环境变量读取）
-    WALLET_ADDRESS = os.getenv("TRON_WALLET_ADDRESS", "")
+    WALLET_ADDRESS = os. getenv("TRON_WALLET_ADDRESS", "")
     
-    # TronGrid API配置
-    TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "")
+    # TronGrid API配置 - 支持多Key轮换
+    TRONGRID_API_KEY_STR = os.getenv("TRONGRID_API_KEY", "")
+    TRONGRID_API_KEYS = [k.strip() for k in TRONGRID_API_KEY_STR.split(",") if k.strip()]
     TRONGRID_API_BASE = "https://api.trongrid.io"
     
     # Telegram配置
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_NOTIFY_CHAT_ID = os.getenv("TELEGRAM_NOTIFY_CHAT_ID", "")
+    TELEGRAM_NOTIFY_CHAT_ID = os. getenv("TELEGRAM_NOTIFY_CHAT_ID", "")
     
-    # 支付套餐配置 (价格单位: USDT)
+    # 支付套餐配置 (价格单位:  USDT)
     PAYMENT_PLANS = {
-        "plan_7d": {"days": 7, "price": 5.0, "name": "7天会员"},
-        "plan_30d": {"days": 30, "price": 15.0, "name": "30天会员"},
-        "plan_120d": {"days": 120, "price": 50.0, "name": "120天会员"},
-        "plan_365d": {"days": 365, "price": 100.0, "name": "365天会员"},
+        "plan_7d": {"days": 7, "price":  5.0, "name": "7天会员"},
+        "plan_30d":  {"days": 30, "price": 15.0, "name": "30天会员"},
+        "plan_120d": {"days":  120, "price": 50.0, "name": "120天会员"},
+        "plan_365d": {"days":  365, "price": 100.0, "name": "365天会员"},
     }
     
     # 订单配置
@@ -81,6 +81,14 @@ class PaymentConfig:
         if not cls.TELEGRAM_BOT_TOKEN:
             return False, "未配置 TELEGRAM_BOT_TOKEN"
         return True, "配置验证通过"
+    
+    @classmethod
+    def get_api_keys_info(cls) -> str:
+        """获取 API Keys 信息"""
+        count = len(cls.TRONGRID_API_KEYS)
+        if count == 0:
+            return "未配置 API Key（使用免费额度）"
+        return f"已配置 {count} 个 API Key"
 
 # ================================
 # 数据模型
@@ -505,21 +513,58 @@ class OrderManager:
 # TRON区块链监听器
 # ================================
 
-class TronUSDTMonitor:
-    """TRON USDT监听器"""
+class TronUSDTMonitor: 
+    """TRON USDT监听器 - 支持多API Key轮换"""
     
-    def __init__(self, wallet_address: str, api_key: str = ""):
+    def __init__(self, wallet_address: str, api_keys: List[str] = None):
         self.wallet_address = wallet_address
-        self.api_key = api_key
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.api_keys = api_keys or []
+        self.current_key_index = 0
+        self.session:  Optional[aiohttp.ClientSession] = None
+        self. failed_keys = set()  # 记录失败的 Key
+    
+    def _get_next_api_key(self) -> str:
+        """轮换获取下一个 API Key"""
+        if not self.api_keys:
+            return ""
+        
+        # 尝试找到一个可用的 Key
+        attempts = 0
+        while attempts < len(self.api_keys):
+            key = self.api_keys[self.current_key_index]
+            self.current_key_index = (self. current_key_index + 1) % len(self.api_keys)
+            
+            # 跳过已失败的 Key（但每轮重试）
+            if key not in self.failed_keys:
+                return key
+            attempts += 1
+        
+        # 所有 Key 都失败过，清空失败记录重试
+        self.failed_keys.clear()
+        key = self.api_keys[self.current_key_index]
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        return key
+    
+    def _mark_key_failed(self, key: str):
+        """标记 Key 失败"""
+        if key: 
+            self.failed_keys.add(key)
+            logger.warning(f"⚠️ API Key 失败，已标记:  {key[: 8]}...")
+    
+    def _get_headers(self, api_key: str = None) -> Dict[str, str]: 
+        """获取请求头"""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        if api_key: 
+            headers["TRON-PRO-API-KEY"] = api_key
+        return headers
     
     async def init_session(self):
-        """初始化HTTP会话"""
+        """初始化HTTP会话（不带默认headers，每次请求单独设置）"""
         if not self.session:
-            headers = {}
-            if self.api_key:
-                headers["TRON-PRO-API-KEY"] = self.api_key
-            self.session = aiohttp.ClientSession(headers=headers)
+            self.session = aiohttp.ClientSession()
     
     async def close_session(self):
         """关闭HTTP会话"""
@@ -528,86 +573,104 @@ class TronUSDTMonitor:
             self.session = None
     
     async def get_trc20_transactions(self, limit: int = 20) -> List[TransactionRecord]:
-        """获取TRC20转账记录
-        
-        Args:
-            limit: 获取数量
-            
-        Returns:
-            交易记录列表
-        """
+        """获取TRC20转账记录 - 支持 Key 轮换和重试"""
         await self.init_session()
         
-        try:
-            # TronGrid API: 获取TRC20转账
-            url = f"{PaymentConfig.TRONGRID_API_BASE}/v1/accounts/{self.wallet_address}/transactions/trc20"
-            params = {
-                "limit": limit,
-                "only_to": "true",  # 只获取转入交易
-                "contract_address": PaymentConfig.USDT_CONTRACT
-            }
+        max_retries = max(len(self.api_keys), 1) + 1  # 至少重试一次
+        
+        for attempt in range(max_retries):
+            api_key = self._get_next_api_key()
             
-            async with self.session.get(url, params=params, timeout=30) as response:
-                if response.status != 200:
-                    logger.error(f"❌ TronGrid API 请求失败: {response.status}")
-                    return []
+            try:
+                url = f"{PaymentConfig.TRONGRID_API_BASE}/v1/accounts/{self.wallet_address}/transactions/trc20"
+                params = {
+                    "limit": limit,
+                    "only_to":  "true",
+                    "contract_address": PaymentConfig.USDT_CONTRACT
+                }
                 
-                data = await response.json()
+                headers = self._get_headers(api_key)
                 
-                if not data.get("success"):
-                    logger.error(f"❌ TronGrid API 返回错误: {data}")
-                    return []
-                
-                transactions = []
-                for item in data.get("data", []):
-                    try:
-                        # 解析交易
-                        tx_hash = item.get("transaction_id")
-                        from_addr = item.get("from")
-                        to_addr = item.get("to")
-                        # USDT有6位小数
-                        value = int(item.get("value", "0"))
-                        amount = value / 1_000_000
-                        timestamp = item.get("block_timestamp", 0) // 1000
-                        block_number = item.get("block", 0)
-                        
-                        # 获取当前区块高度计算确认数
-                        current_block = await self.get_current_block_number()
-                        confirmations = max(0, current_block - block_number)
-                        
-                        tx = TransactionRecord(
-                            tx_hash=tx_hash,
-                            from_address=from_addr,
-                            to_address=to_addr,
-                            amount=amount,
-                            timestamp=timestamp,
-                            block_number=block_number,
-                            confirmations=confirmations,
-                            contract_address=PaymentConfig.USDT_CONTRACT
-                        )
-                        
-                        transactions.append(tx)
-                    except Exception as e:
-                        logger.error(f"❌ 解析交易失败: {e}")
+                async with self.session.get(url, params=params, headers=headers, timeout=30) as response:
+                    if response.status == 401:
+                        logger.error(f"❌ API Key 认证失败 (401): {api_key[: 8] if api_key else 'None'}...")
+                        self._mark_key_failed(api_key)
+                        continue  # 尝试下一个 Key
+                    
+                    if response.status == 429:
+                        logger.warning(f"⚠️ API 请求限流 (429)，切换 Key...")
+                        self._mark_key_failed(api_key)
+                        await asyncio.sleep(1)
                         continue
-                
-                return transactions
-                
-        except asyncio.TimeoutError:
-            logger.error("❌ TronGrid API 请求超时")
-            return []
-        except Exception as e:
-            logger.error(f"❌ 获取TRC20交易失败: {e}")
-            return []
+                    
+                    if response.status != 200:
+                        logger.error(f"❌ TronGrid API 请求失败:  {response.status}")
+                        continue
+                    
+                    data = await response.json()
+                    
+                    if not data.get("success"):
+                        logger. error(f"❌ TronGrid API 返回错误: {data}")
+                        continue
+                    
+                    # 成功，解析交易
+                    transactions = []
+                    for item in data.get("data", []):
+                        try:
+                            tx_hash = item.get("transaction_id")
+                            from_addr = item.get("from")
+                            to_addr = item.get("to")
+                            value = int(item.get("value", "0"))
+                            amount = value / 1_000_000
+                            timestamp = item.get("block_timestamp", 0) // 1000
+                            block_number = item. get("block", 0)
+                            
+                            current_block = await self. get_current_block_number()
+                            confirmations = max(0, current_block - block_number)
+                            
+                            tx = TransactionRecord(
+                                tx_hash=tx_hash,
+                                from_address=from_addr,
+                                to_address=to_addr,
+                                amount=amount,
+                                timestamp=timestamp,
+                                block_number=block_number,
+                                confirmations=confirmations,
+                                contract_address=PaymentConfig.USDT_CONTRACT
+                            )
+                            transactions.append(tx)
+                        except Exception as e:
+                            logger.error(f"❌ 解析交易失败: {e}")
+                            continue
+                    
+                    if api_key:
+                        logger.debug(f"✅ 使用 API Key:  {api_key[: 8]}...  成功")
+                    
+                    return transactions
+                    
+            except asyncio.TimeoutError:
+                logger. error(f"❌ TronGrid API 请求超时")
+                self._mark_key_failed(api_key)
+                continue
+            except Exception as e: 
+                logger.error(f"❌ 获取TRC20交易失败: {e}")
+                self._mark_key_failed(api_key)
+                continue
+        
+        logger.error(f"❌ 所有 API Key 都失败，跳过本次轮询")
+        return []
     
     async def get_current_block_number(self) -> int:
         """获取当前区块高度"""
         await self.init_session()
         
-        try:
-            url = f"{PaymentConfig.TRONGRID_API_BASE}/wallet/getnowblock"
+        api_key = self._get_next_api_key()
+        
+        try: 
+            url = f"{PaymentConfig. TRONGRID_API_BASE}/wallet/getnowblock"
+            headers = self._get_headers(api_key)
             
-            async with self.session.post(url, timeout=10) as response:
+            async with self.session.post(url, headers=headers, timeout=10) as response:
                 if response.status != 200:
                     return 0
                 
@@ -615,7 +678,7 @@ class TronUSDTMonitor:
                 block_header = data.get("block_header", {})
                 raw_data = block_header.get("raw_data", {})
                 return raw_data.get("number", 0)
-        except Exception as e:
+        except Exception as e: 
             logger.error(f"❌ 获取当前区块高度失败: {e}")
             return 0
 
@@ -721,11 +784,11 @@ class TronPaymentService:
         self.order_manager = OrderManager(self.db)
         self.monitor = TronUSDTMonitor(
             PaymentConfig.WALLET_ADDRESS,
-            PaymentConfig.TRONGRID_API_KEY
+            PaymentConfig. TRONGRID_API_KEYS  # 传入 Key 列表
         )
         self.notifier = TelegramNotifier(
-            PaymentConfig.TELEGRAM_BOT_TOKEN,
-            PaymentConfig.TELEGRAM_NOTIFY_CHAT_ID
+            PaymentConfig. TELEGRAM_BOT_TOKEN,
+            PaymentConfig. TELEGRAM_NOTIFY_CHAT_ID
         )
         self.running = False
     
@@ -741,7 +804,8 @@ class TronPaymentService:
         
         logger.info(f"✅ {msg}")
         logger.info(f"📡 监听钱包: {PaymentConfig.WALLET_ADDRESS}")
-        logger.info(f"⏱️ 轮询间隔: {PaymentConfig.POLL_INTERVAL_SECONDS}秒")
+        logger.info(f"🔑 API Keys: {PaymentConfig.get_api_keys_info()}")
+        logger.info(f"⏱️ 轮询间隔:  {PaymentConfig. POLL_INTERVAL_SECONDS}秒")
         logger.info(f"🔐 最少确认数: {PaymentConfig.MIN_CONFIRMATIONS}")
         
         self.running = True
