@@ -488,6 +488,42 @@ class PaymentDatabase:
         except Exception as e:
             logger.error(f"❌ 获取消息ID失败: {e}")
             return None
+    
+    def get_expired_pending_orders(self) -> List[PaymentOrder]:
+        """获取已过期的待支付订单"""
+        try:
+            now = datetime.now(BEIJING_TZ)
+            
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT * FROM orders 
+                WHERE status = ? AND expires_at < ?
+            """, (OrderStatus.PENDING.value, now.isoformat()))
+            
+            rows = c.fetchall()
+            conn.close()
+            
+            orders = []
+            for row in rows:
+                orders.append(PaymentOrder(
+                    order_id=row[0],
+                    user_id=row[1],
+                    plan_id=row[2],
+                    amount=row[3],
+                    status=OrderStatus(row[4]),
+                    created_at=datetime.fromisoformat(row[5]),
+                    expires_at=datetime.fromisoformat(row[6]),
+                    tx_hash=row[7],
+                    paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                ))
+            
+            return orders
+        except Exception as e:
+            logger.error(f"❌ 获取过期订单失败: {e}")
+            return []
 
 
 # ================================
@@ -897,23 +933,44 @@ class TelegramNotifier:
         
         return False
     
-    async def send_message_with_keyboard(self, chat_id: int, text: str, keyboard) -> bool:
-        """发送带键盘的消息"""
-        try:
-            await self.ensure_session()
-            url = f"{self.api_base}/sendMessage"
-            data = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "reply_markup": keyboard.to_dict() if hasattr(keyboard, 'to_dict') else keyboard
-            }
-            async with self.session.post(url, json=data, timeout=30) as response:
-                result = await response.json()
-                return result.get("ok", False)
-        except Exception as e:
-            logger.error(f"发送带键盘消息失败: {e}")
-            return False
+    async def send_message_with_keyboard(self, chat_id: int, text: str, keyboard: dict, retry: int = 3) -> bool:
+        """发送带键盘的消息 - 带重试"""
+        for attempt in range(retry):
+            try:
+                await self.ensure_session()
+                url = f"{self.api_base}/sendMessage"
+                data = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": keyboard
+                }
+                
+                logger.info(f"📤 发送带按钮消息到 {chat_id}... (尝试 {attempt + 1}/{retry})")
+                
+                timeout = aiohttp.ClientTimeout(total=60)
+                async with self.session.post(url, json=data, timeout=timeout) as response:
+                    result = await response.json()
+                    
+                    if result.get("ok"):
+                        logger.info(f"✅ 带按钮消息发送成功: {chat_id}")
+                        return True
+                    else:
+                        error = result.get("description", "未知错误")
+                        logger.error(f"❌ Telegram API 错误: {error}")
+                        if "bot was blocked" in error.lower():
+                            return False
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ 发送消息超时 (尝试 {attempt + 1}/{retry})")
+                if attempt < retry - 1:
+                    await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"❌ 发送消息异常: {type(e).__name__}: {e}")
+                if attempt < retry - 1:
+                    await asyncio.sleep(2)
+        
+        return False
     
     async def notify_payment_received(self, order: PaymentOrder, tx_hash: str, tx_info: dict = None):
         """通知收款成功"""
@@ -1075,10 +1132,13 @@ class TronPaymentService:
         try:
             while self.running:
                 try:
-                    # 1. 过期超时订单
+                    # 1. 检查并处理过期订单（删除消息+发送通知）
+                    await self.check_expired_orders()
+                    
+                    # 2. 过期超时订单（标记状态）
                     self.order_manager.expire_old_orders()
                     
-                    # 2. 获取待支付订单
+                    # 3. 获取待支付订单
                     pending_orders = self.db.get_pending_orders()
                     if not pending_orders:
                         await asyncio.sleep(PaymentConfig.POLL_INTERVAL_SECONDS)
@@ -1086,11 +1146,11 @@ class TronPaymentService:
                     
                     logger.info(f"📊 当前待支付订单: {len(pending_orders)} 个")
                     
-                    # 3. 获取最新交易
+                    # 4. 获取最新交易
                     transactions = await self.monitor.get_trc20_transactions(limit=50)
                     logger.info(f"🔍 获取到 {len(transactions)} 笔交易")
                     
-                    # 4. 匹配订单和交易
+                    # 5. 匹配订单和交易
                     for tx in transactions:
                         # 检查是否已处理
                         if self.db.is_transaction_processed(tx.tx_hash):
@@ -1206,6 +1266,59 @@ class TronPaymentService:
         await self.monitor.close_session()
         await self.notifier.close()
         logger.info("✅ 服务已停止")
+    
+    async def check_expired_orders(self):
+        """检查并处理过期订单"""
+        try:
+            expired_orders = self.db.get_expired_pending_orders()
+            
+            for order in expired_orders:
+                logger.info(f"⏱️ 订单超时: {order.order_id}")
+                
+                # 1. 更新订单状态为过期
+                self.db.update_order_status(order.order_id, OrderStatus.EXPIRED)
+                
+                # 2. 删除原订单消息
+                try:
+                    message_id = self.db.get_order_message_id(order.order_id)
+                    if message_id:
+                        deleted = await self.notifier.delete_message(order.user_id, message_id)
+                        if deleted:
+                            logger.info(f"✅ 已删除超时订单消息: {message_id}")
+                        else:
+                            logger.warning(f"⚠️ 删除超时订单消息失败: {message_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 删除超时订单消息异常: {e}")
+                
+                # 3. 发送超时通知给用户
+                timeout_msg = f"""
+⏱️ <b>订单已超时</b>
+
+• 订单号: <code>{order.order_id}</code>
+• 状态: 已超时
+
+订单已超过有效期，如需购买会员请重新下单。
+                """
+                
+                # 使用 Telegram API 发送带按钮的消息
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "💎 重新购买", "callback_data": "usdt_payment"}],
+                        [{"text": "🔙 返回主菜单", "callback_data": "back_to_main"}]
+                    ]
+                }
+                
+                await self.notifier.send_message_with_keyboard(
+                    order.user_id,
+                    timeout_msg,
+                    keyboard
+                )
+                logger.info(f"✅ 已发送超时通知: 用户 {order.user_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ 检查过期订单失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def grant_membership(self, order: PaymentOrder) -> bool:
         """授予会员 - 使用与 tdata.py 相同的数据库和格式
