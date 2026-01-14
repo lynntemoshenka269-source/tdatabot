@@ -12623,6 +12623,15 @@ class EnhancedBot:
             query.answer()
             user = query.from_user
             user_id = user.id
+            
+            # 如果当前消息是图片消息（来自取消订单），先删除再发送新消息
+            message_was_photo = query.message and query.message.photo
+            if message_was_photo:
+                try:
+                    query.message.delete()
+                except Exception as e:
+                    logger.warning(f"删除图片消息失败: {e}")
+            
             first_name = user.first_name or t(user_id, 'default_user')
             is_member, level, expiry = self.db.check_membership(user_id)
             
@@ -12708,11 +12717,23 @@ class EnhancedBot:
                 ])
             
             keyboard = InlineKeyboardMarkup(buttons)
-            query.edit_message_text(
-                text=welcome_text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
+            
+            # 如果删除了图片，发送新消息；否则编辑现有消息
+            if message_was_photo:
+                from telegram import Bot
+                bot = query.bot if hasattr(query, 'bot') else Bot(token=os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"))
+                bot.send_message(
+                    chat_id=user_id,
+                    text=welcome_text,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+            else:
+                query.edit_message_text(
+                    text=welcome_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
         elif data == "help":
             self.handle_help_callback(query)
         elif data == "status":
@@ -17135,6 +17156,14 @@ class EnhancedBot:
         user_id = query.from_user.id
         query.answer()
         
+        # 如果当前消息是图片消息（来自取消订单），先删除再发送新消息
+        message_was_photo = query.message and query.message.photo
+        if message_was_photo:
+            try:
+                query.message.delete()
+            except Exception as e:
+                logger.warning(f"删除图片消息失败: {e}")
+        
         # 检查是否有待支付订单
         try:
             import sys
@@ -17169,7 +17198,18 @@ class EnhancedBot:
                         [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
                     ])
                     
-                    self.safe_edit_message(query, text, 'HTML', keyboard)
+                    # 如果删除了图片，发送新消息；否则编辑现有消息
+                    if message_was_photo:
+                        from telegram import Bot
+                        bot = query.bot if hasattr(query, 'bot') else Bot(token=os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"))
+                        bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            parse_mode='HTML',
+                            reply_markup=keyboard
+                        )
+                    else:
+                        self.safe_edit_message(query, text, 'HTML', keyboard)
                     return
         except Exception as e:
             logger.error(f"检查待支付订单失败: {e}")
@@ -17202,7 +17242,18 @@ class EnhancedBot:
             [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
         ])
         
-        self.safe_edit_message(query, text, 'HTML', keyboard)
+        # 如果删除了图片，发送新消息；否则编辑现有消息
+        if message_was_photo:
+            from telegram import Bot
+            bot = query.bot if hasattr(query, 'bot') else Bot(token=os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"))
+            bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
+        else:
+            self.safe_edit_message(query, text, 'HTML', keyboard)
     
     def handle_usdt_plan_select(self, query, plan_id: str):
         """处理套餐选择"""
@@ -17354,36 +17405,39 @@ class EnhancedBot:
             if success:
                 query.answer("✅ 订单已取消", show_alert=True)
                 
-                text = """❌ <b>订单已取消</b>
-
-如需购买会员，请重新选择套餐。"""
-                
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💎 重新购买", callback_data="usdt_payment")],
-                    [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
-                ])
-                
-                # 使用 edit_message_caption 而不是 edit_message_text
-                # 因为订单消息是图片+caption格式
+                # 删除原消息（包含二维码图片）
                 try:
-                    query.edit_message_caption(
-                        caption=text,
+                    query.message.delete()
+                except Exception as e:
+                    logger.warning(f"删除消息失败: {e}")
+                
+                # 发送新的纯文本消息
+                try:
+                    from telegram import Bot
+                    bot = query.bot if hasattr(query, 'bot') else Bot(token=os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"))
+                    
+                    text = f"""
+❌ <b>订单已取消</b>
+
+• 订单号: <code>{order_id}</code>
+• 状态: 已取消
+
+如需购买会员，请重新选择套餐。
+                    """
+                    
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("💎 重新购买", callback_data="usdt_payment")],
+                        [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
+                    ])
+                    
+                    bot.send_message(
+                        chat_id=user_id,
+                        text=text,
                         parse_mode='HTML',
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    logger.warning(f"编辑消息caption失败: {e}")
-                    # 如果编辑失败，尝试删除原消息并发送新消息
-                    try:
-                        query.message.delete()
-                        query.bot.send_message(
-                            chat_id=user_id,
-                            text=text,
-                            parse_mode='HTML',
-                            reply_markup=keyboard
-                        )
-                    except:
-                        pass
+                    logger.error(f"发送取消消息失败: {e}")
             else:
                 query.answer("❌ 取消失败，请稍后重试", show_alert=True)
             

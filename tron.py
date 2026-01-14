@@ -723,48 +723,69 @@ class TronUSDTMonitor:
 class TelegramNotifier:
     """Telegram通知器"""
     
-    def __init__(self, bot_token: str, notify_chat_id: str = ""):
-        self.bot_token = bot_token
-        self.notify_chat_id = notify_chat_id
-        self.api_base = f"https://api.telegram.org/bot{bot_token}"
-        self.session: Optional[aiohttp.ClientSession] = None
+    def __init__(self):
+        self.bot_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+        if not self.bot_token:
+            logger.error("❌ BOT_TOKEN 未配置！")
+        self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
+        self.session = None
+        self.notify_chat_id = os.getenv("NOTIFY_CHAT_ID") or os.getenv("TELEGRAM_NOTIFY_CHAT_ID")
     
-    async def init_session(self):
-        """初始化HTTP会话"""
-        if not self.session:
+    async def ensure_session(self):
+        """确保 session 已初始化"""
+        if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
     
-    async def close_session(self):
-        """关闭HTTP会话"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-    
-    async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    async def send_message(self, chat_id: int, text: str) -> bool:
         """发送消息"""
-        await self.init_session()
-        
         try:
+            if not self.bot_token:
+                logger.error("❌ BOT_TOKEN 未配置，无法发送消息")
+                return False
+            
+            await self.ensure_session()
+            
             url = f"{self.api_base}/sendMessage"
             data = {
                 "chat_id": chat_id,
                 "text": text,
-                "parse_mode": parse_mode
+                "parse_mode": "HTML"
             }
             
-            async with self.session.post(url, json=data, timeout=10) as response:
-                if response.status == 200:
+            logger.info(f"📤 发送消息到 {chat_id}...")
+            
+            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                result = await response.json()
+                
+                if result.get("ok"):
+                    logger.info(f"✅ 消息发送成功: {chat_id}")
                     return True
                 else:
-                    logger.error(f"❌ 发送消息失败: {response.status}")
+                    error_desc = result.get("description", "未知错误")
+                    logger.error(f"❌ Telegram API 错误: {error_desc}")
                     return False
-        except Exception as e:
-            logger.error(f"❌ 发送消息异常: {e}")
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"❌ 网络请求失败: {type(e).__name__}: {e}")
             return False
+        except asyncio.TimeoutError:
+            logger.error(f"❌ 发送消息超时: {chat_id}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ 发送消息异常: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    async def close(self):
+        """关闭 session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
     
     async def send_sticker(self, chat_id: int, sticker_id: str) -> bool:
         """发送贴纸"""
         try:
+            await self.ensure_session()
             url = f"{self.api_base}/sendSticker"
             data = {"chat_id": chat_id, "sticker": sticker_id}
             async with self.session.post(url, json=data, timeout=10) as response:
@@ -845,12 +866,9 @@ class TronPaymentService:
         self.order_manager = OrderManager(self.db)
         self.monitor = TronUSDTMonitor(
             PaymentConfig.WALLET_ADDRESS,
-            PaymentConfig. TRONGRID_API_KEYS  # 传入 Key 列表
+            PaymentConfig.TRONGRID_API_KEYS  # 传入 Key 列表
         )
-        self.notifier = TelegramNotifier(
-            PaymentConfig. TELEGRAM_BOT_TOKEN,
-            PaymentConfig. TELEGRAM_NOTIFY_CHAT_ID
-        )
+        self.notifier = TelegramNotifier()
         self.running = False
     
     async def start(self):
@@ -998,11 +1016,11 @@ class TronPaymentService:
         logger.info("🛑 正在停止服务...")
         self.running = False
         await self.monitor.close_session()
-        await self.notifier.close_session()
+        await self.notifier.close()
         logger.info("✅ 服务已停止")
     
     async def grant_membership(self, order: PaymentOrder) -> bool:
-        """授予会员
+        """授予会员 - 使用与 tdata.py 相同的数据库和格式
         
         Args:
             order: 订单对象
@@ -1023,16 +1041,22 @@ class TronPaymentService:
             conn = sqlite3.connect(PaymentConfig.MAIN_DB)
             c = conn.cursor()
             
-            # 自动建表：确保 memberships 表存在
+            # 自动建表：确保 memberships 表存在（与 tdata.py 相同的结构）
             c.execute("""
                 CREATE TABLE IF NOT EXISTS memberships (
                     user_id INTEGER PRIMARY KEY,
-                    level TEXT DEFAULT '会员',
-                    expiry_time TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
+                    level TEXT,
+                    trial_expiry_time TEXT,
+                    created_at TEXT
                 )
             """)
+            
+            # 添加 expiry_time 列（如果不存在）
+            try:
+                c.execute("ALTER TABLE memberships ADD COLUMN expiry_time TEXT")
+            except sqlite3.OperationalError:
+                # 列已存在，忽略
+                pass
             
             # 检查用户是否已有会员记录
             c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
@@ -1041,35 +1065,41 @@ class TronPaymentService:
             now = datetime.now(BEIJING_TZ)
             
             if row and row[0]:
-                # 已有会员，累加天数
-                expiry_time = datetime.fromisoformat(row[0])
-                # 如果已过期，从现在开始计算
-                if expiry_time < now:
-                    new_expiry = now + timedelta(days=days)
-                else:
-                    new_expiry = expiry_time + timedelta(days=days)
-                
-                c.execute("""
-                    UPDATE memberships 
-                    SET expiry_time = ?, level = '会员'
-                    WHERE user_id = ?
-                """, (new_expiry.isoformat(), order.user_id))
+                # 已有到期时间，从到期时间继续累加
+                try:
+                    # Database stores naive datetime strings, parse with strptime
+                    current_expiry = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                    # 如果到期时间在未来，从到期时间累加
+                    if current_expiry > now.replace(tzinfo=None):
+                        new_expiry = current_expiry + timedelta(days=days)
+                    else:
+                        # 已过期，从当前时间累加
+                        new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
+                except Exception as e:
+                    logger.warning(f"解析到期时间失败: {e}，从当前时间计算")
+                    new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
             else:
-                # 新会员
-                new_expiry = now + timedelta(days=days)
-                c.execute("""
-                    INSERT INTO memberships (user_id, level, expiry_time)
-                    VALUES (?, '会员', ?)
-                """, (order.user_id, new_expiry.isoformat()))
+                # 新会员，从当前时间累加
+                new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
+            
+            # 使用 INSERT OR REPLACE 和与 tdata.py 相同的格式
+            c.execute("""
+                INSERT OR REPLACE INTO memberships 
+                (user_id, level, expiry_time, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (order.user_id, '会员', new_expiry.strftime("%Y-%m-%d %H:%M:%S"), 
+                  now.strftime("%Y-%m-%d %H:%M:%S")))
             
             conn.commit()
             conn.close()
             
-            logger.info(f"✅ 会员授予成功: 用户 {order.user_id}, 天数 {days}")
+            logger.info(f"✅ 会员授予成功: 用户 {order.user_id}, 天数 {days}, 到期 {new_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
             return True
             
         except Exception as e:
             logger.error(f"❌ 授予会员失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 # ================================
