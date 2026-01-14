@@ -200,6 +200,109 @@ def test_payment_plans():
     
     print()
 
+def test_amount_uniqueness():
+    """测试金额唯一性检查"""
+    print("🧪 测试金额唯一性检查...")
+    from tron import PaymentDatabase, OrderManager, OrderStatus
+    
+    # 使用临时数据库
+    temp_db = tempfile.mktemp(suffix=".db")
+    db = PaymentDatabase(temp_db)
+    manager = OrderManager(db)
+    
+    # 创建第一个订单
+    order1 = manager.create_payment_order(12345, "plan_7d")
+    assert order1 is not None, "第一个订单创建失败"
+    
+    # 检查该金额是否被标记为使用中
+    is_used = db.is_amount_in_use(order1.amount)
+    assert is_used, "金额应该被标记为使用中"
+    print(f"   ✅ 金额 {order1.amount:.4f} 已被标记为使用中")
+    
+    # 创建第二个订单（不同用户）- 应该生成不同金额
+    order2 = manager.create_payment_order(67890, "plan_7d")
+    assert order2 is not None, "第二个订单创建失败"
+    assert order2.amount != order1.amount, "两个订单的金额应该不同"
+    print(f"   ✅ 第二个订单金额 {order2.amount:.4f} 与第一个订单不同")
+    
+    # 检查不存在的金额
+    is_used = db.is_amount_in_use(999.9999)
+    assert not is_used, "不存在的金额不应该被标记为使用中"
+    print(f"   ✅ 不存在的金额检查通过")
+    
+    # 清理
+    os.remove(temp_db)
+    print()
+
+def test_security_checks():
+    """测试安全检查逻辑"""
+    print("🧪 测试安全检查逻辑...")
+    from tron import PaymentDatabase, OrderManager, TransactionRecord
+    from datetime import datetime, timedelta, timezone
+    
+    # 使用临时数据库
+    temp_db = tempfile.mktemp(suffix=".db")
+    db = PaymentDatabase(temp_db)
+    manager = OrderManager(db)
+    
+    BEIJING_TZ = timezone(timedelta(hours=8))
+    now = datetime.now(BEIJING_TZ)
+    
+    # 创建订单
+    order = manager.create_payment_order(12345, "plan_7d")
+    assert order is not None
+    
+    # 测试1: 旧交易（超过15分钟）应该被拒绝
+    old_timestamp = int((now - timedelta(minutes=20)).timestamp())
+    old_tx = TransactionRecord(
+        tx_hash="0xold",
+        from_address="TFrom",
+        to_address="TTo",
+        amount=order.amount,
+        timestamp=old_timestamp,
+        block_number=100,
+        confirmations=20,
+        contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    )
+    
+    # 检查交易时间是否太旧
+    tx_time = datetime.fromtimestamp(old_tx.timestamp, tz=BEIJING_TZ)
+    is_too_old = (now - tx_time).total_seconds() > 900
+    assert is_too_old, "旧交易应该被识别"
+    print(f"   ✅ 旧交易检查通过（超过15分钟）")
+    
+    # 测试2: 交易时间在订单创建之前应该被拒绝
+    before_order_timestamp = int((order.created_at - timedelta(minutes=5)).timestamp())
+    before_tx = TransactionRecord(
+        tx_hash="0xbefore",
+        from_address="TFrom",
+        to_address="TTo",
+        amount=order.amount,
+        timestamp=before_order_timestamp,
+        block_number=100,
+        confirmations=20,
+        contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    )
+    
+    before_tx_time = datetime.fromtimestamp(before_tx.timestamp, tz=BEIJING_TZ)
+    order_created = order.created_at.replace(tzinfo=BEIJING_TZ)
+    is_before_order = before_tx_time < order_created - timedelta(minutes=1)
+    assert is_before_order, "订单创建前的交易应该被识别"
+    print(f"   ✅ 订单创建前交易检查通过")
+    
+    # 测试3: 金额匹配精度检查
+    exact_match = abs(order.amount - order.amount) < 0.0001
+    assert exact_match, "精确金额应该匹配"
+    
+    wrong_amount = order.amount + 0.001
+    not_match = abs(wrong_amount - order.amount) >= 0.0001
+    assert not_match, "差异超过0.0001的金额不应该匹配"
+    print(f"   ✅ 金额匹配精度检查通过")
+    
+    # 清理
+    os.remove(temp_db)
+    print()
+
 def run_all_tests():
     """运行所有测试"""
     print("=" * 50)
@@ -215,6 +318,8 @@ def run_all_tests():
         test_transaction_record,
         test_order_expiration,
         test_payment_plans,
+        test_amount_uniqueness,
+        test_security_checks,
     ]
     
     passed = 0

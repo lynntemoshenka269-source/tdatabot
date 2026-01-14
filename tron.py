@@ -431,6 +431,28 @@ class PaymentDatabase:
         except Exception as e:
             logger.error(f"❌ 检查交易是否已处理失败: {e}")
             return False
+    
+    def is_amount_in_use(self, amount: float) -> bool:
+        """检查金额是否已被待支付订单使用"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT 1 FROM orders 
+                WHERE status = ? 
+                AND ABS(amount - ?) < 0.00001
+                LIMIT 1
+            """, (OrderStatus.PENDING.value, amount))
+            
+            result = c.fetchone()
+            conn.close()
+            
+            return result is not None
+        except Exception as e:
+            logger.error(f"❌ 检查金额失败: {e}")
+            return True  # 出错时保守处理
+
 
 # ================================
 # 订单管理器
@@ -472,10 +494,22 @@ class OrderManager:
         # 生成订单ID
         order_id = f"ORDER_{user_id}_{int(time.time())}_{random.randint(1000, 9999)}"
         
-        # 生成金额（添加随机小数防止冲突）
+        # 生成唯一金额，最多尝试 50 次
         base_amount = plan["price"]
-        random_decimal = random.randint(1, 9999) / 10000  # 0.0001 - 0.9999
-        amount = base_amount + random_decimal
+        max_attempts = 50
+        amount = None
+        
+        for attempt in range(max_attempts):
+            random_decimal = random.randint(1, 9999) / 10000  # 0.0001 - 0.9999
+            candidate_amount = base_amount + random_decimal
+            
+            if not self.db.is_amount_in_use(candidate_amount):
+                amount = candidate_amount
+                break
+        
+        if amount is None:
+            logger.error(f"❌ 无法生成唯一金额")
+            return None
         
         # 创建订单
         now = datetime.now(BEIJING_TZ)
@@ -842,15 +876,51 @@ class TronPaymentService:
                         # 验证合约地址
                         if tx.contract_address != PaymentConfig.USDT_CONTRACT:
                             logger.warning(f"⚠️ 非官方USDT合约: {tx.contract_address}")
+                            tx.processed = True
+                            self.db.save_transaction(tx)
+                            continue
+                        
+                        # 获取交易时间
+                        tx_time = datetime.fromtimestamp(tx.timestamp, tz=BEIJING_TZ)
+                        now = datetime.now(BEIJING_TZ)
+                        
+                        # 安全检查1: 交易不能太旧（15分钟内）
+                        if (now - tx_time).total_seconds() > 900:
+                            logger.info(f"⏱️ 交易太旧（超过15分钟），标记已处理: {tx.tx_hash[:16]}...")
+                            tx.processed = True
+                            self.db.save_transaction(tx)
                             continue
                         
                         # 匹配订单
                         matched_order = None
                         for order in pending_orders:
-                            # 金额精确匹配（保留4位小数）
-                            if abs(tx.amount - order.amount) < 0.0001:
-                                matched_order = order
-                                break
+                            # 安全检查2: 订单必须未过期
+                            order_expires = order.expires_at
+                            if order_expires.tzinfo is None:
+                                order_expires = order_expires.replace(tzinfo=BEIJING_TZ)
+                            
+                            if now > order_expires:
+                                self.db.update_order_status(order.order_id, OrderStatus.EXPIRED)
+                                continue
+                            
+                            # 安全检查3: 金额精确匹配
+                            if abs(tx.amount - order.amount) >= 0.0001:
+                                continue
+                            
+                            # 安全检查4: 交易时间必须在订单创建之后
+                            order_created = order.created_at
+                            if order_created.tzinfo is None:
+                                order_created = order_created.replace(tzinfo=BEIJING_TZ)
+                            
+                            if tx_time < order_created - timedelta(minutes=1):
+                                continue
+                            
+                            # 安全检查5: 交易时间必须在订单有效期内
+                            if tx_time > order_expires:
+                                continue
+                            
+                            matched_order = order
+                            break
                         
                         if matched_order:
                             logger.info(f"✅ 交易匹配成功: {tx.tx_hash[:16]}... -> 订单 {matched_order.order_id}")
@@ -882,8 +952,9 @@ class TronPaymentService:
                             tx.processed = True
                             self.db.save_transaction(tx)
                         else:
-                            # 未匹配的交易也保存
+                            # 未匹配的交易也标记已处理
                             logger.info(f"ℹ️ 交易未匹配订单: {tx.amount:.4f} USDT")
+                            tx.processed = True
                             self.db.save_transaction(tx)
                     
                 except Exception as e:
@@ -924,6 +995,17 @@ class TronPaymentService:
             # 连接主数据库授予会员
             conn = sqlite3.connect(PaymentConfig.MAIN_DB)
             c = conn.cursor()
+            
+            # 自动建表：确保 memberships 表存在
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS memberships (
+                    user_id INTEGER PRIMARY KEY,
+                    level TEXT DEFAULT '会员',
+                    expiry_time TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+            """)
             
             # 检查用户是否已有会员记录
             c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
