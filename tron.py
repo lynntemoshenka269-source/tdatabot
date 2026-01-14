@@ -1,0 +1,922 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+USDT-TRC20 支付监听服务
+独立运行的支付系统，监听区块链交易并自动发放会员
+"""
+
+import os
+import sys
+import asyncio
+import aiohttp
+import sqlite3
+import json
+import time
+import qrcode
+import base58
+from io import BytesIO
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+import random
+import logging
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 北京时区
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+# ================================
+# 配置类
+# ================================
+
+class PaymentConfig:
+    """支付配置"""
+    # USDT-TRC20 官方合约地址
+    USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    
+    # 收款钱包地址（从环境变量读取）
+    WALLET_ADDRESS = os.getenv("TRON_WALLET_ADDRESS", "")
+    
+    # TronGrid API配置
+    TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "")
+    TRONGRID_API_BASE = "https://api.trongrid.io"
+    
+    # Telegram配置
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_NOTIFY_CHAT_ID = os.getenv("TELEGRAM_NOTIFY_CHAT_ID", "")
+    
+    # 支付套餐配置 (价格单位: USDT)
+    PAYMENT_PLANS = {
+        "plan_7d": {"days": 7, "price": 5.0, "name": "7天会员"},
+        "plan_30d": {"days": 30, "price": 15.0, "name": "30天会员"},
+        "plan_120d": {"days": 120, "price": 50.0, "name": "120天会员"},
+        "plan_365d": {"days": 365, "price": 100.0, "name": "365天会员"},
+    }
+    
+    # 订单配置
+    ORDER_TIMEOUT_MINUTES = 10  # 订单超时时间（分钟）
+    MIN_CONFIRMATIONS = 20  # 最少区块确认数
+    
+    # 监听配置
+    POLL_INTERVAL_SECONDS = 10  # 轮询间隔（秒）
+    
+    # 数据库配置
+    PAYMENT_DB = "payment.db"
+    MAIN_DB = "tdatabot.db"  # 主数据库（用于授予会员）
+    
+    @classmethod
+    def validate(cls) -> Tuple[bool, str]:
+        """验证配置是否完整"""
+        if not cls.WALLET_ADDRESS:
+            return False, "未配置 TRON_WALLET_ADDRESS"
+        if not cls.TELEGRAM_BOT_TOKEN:
+            return False, "未配置 TELEGRAM_BOT_TOKEN"
+        return True, "配置验证通过"
+
+# ================================
+# 数据模型
+# ================================
+
+class OrderStatus(Enum):
+    """订单状态"""
+    PENDING = "pending"  # 待支付
+    PAID = "paid"  # 已支付，等待确认
+    COMPLETED = "completed"  # 已完成
+    EXPIRED = "expired"  # 已过期
+    CANCELLED = "cancelled"  # 已取消
+
+@dataclass
+class PaymentOrder:
+    """支付订单"""
+    order_id: str  # 订单ID
+    user_id: int  # 用户ID
+    plan_id: str  # 套餐ID
+    amount: float  # 支付金额（带随机小数）
+    status: OrderStatus  # 订单状态
+    created_at: datetime  # 创建时间
+    expires_at: datetime  # 过期时间
+    tx_hash: Optional[str] = None  # 交易哈希
+    paid_at: Optional[datetime] = None  # 支付时间
+    completed_at: Optional[datetime] = None  # 完成时间
+
+@dataclass
+class TransactionRecord:
+    """交易记录"""
+    tx_hash: str  # 交易哈希
+    from_address: str  # 发送地址
+    to_address: str  # 接收地址
+    amount: float  # 金额
+    timestamp: int  # 区块时间戳
+    block_number: int  # 区块号
+    confirmations: int  # 确认数
+    contract_address: str  # 合约地址
+    processed: bool = False  # 是否已处理
+
+# ================================
+# 二维码生成器
+# ================================
+
+class QRCodeGenerator:
+    """二维码生成器"""
+    
+    @staticmethod
+    def generate_payment_qr(wallet_address: str, amount: float) -> bytes:
+        """生成支付二维码
+        
+        Args:
+            wallet_address: 收款钱包地址
+            amount: 支付金额
+            
+        Returns:
+            二维码图片字节流
+        """
+        # TRC20 USDT 支付链接格式
+        # tronlink://send?to=address&amount=amount&token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+        payment_url = f"tronlink://send?to={wallet_address}&amount={amount}&token={PaymentConfig.USDT_CONTRACT}"
+        
+        # 生成二维码
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(payment_url)
+        qr.make(fit=True)
+        
+        # 转换为图片
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # 转换为字节流
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        return buffer.getvalue()
+
+# ================================
+# 支付数据库管理
+# ================================
+
+class PaymentDatabase:
+    """支付数据库管理"""
+    
+    def __init__(self, db_path: str = PaymentConfig.PAYMENT_DB):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """初始化数据库"""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        # 订单表
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                plan_id TEXT NOT NULL,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                tx_hash TEXT,
+                paid_at TEXT,
+                completed_at TEXT
+            )
+        """)
+        
+        # 交易记录表
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                tx_hash TEXT PRIMARY KEY,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                amount REAL NOT NULL,
+                timestamp INTEGER NOT NULL,
+                block_number INTEGER NOT NULL,
+                confirmations INTEGER NOT NULL,
+                contract_address TEXT NOT NULL,
+                processed INTEGER DEFAULT 0,
+                order_id TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        
+        # 创建索引
+        c.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_processed ON transactions(processed)")
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ 支付数据库初始化完成")
+    
+    def create_order(self, order: PaymentOrder) -> bool:
+        """创建订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                INSERT INTO orders (order_id, user_id, plan_id, amount, status, 
+                                   created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                order.order_id,
+                order.user_id,
+                order.plan_id,
+                order.amount,
+                order.status.value,
+                order.created_at.isoformat(),
+                order.expires_at.isoformat()
+            ))
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ 订单创建成功: {order.order_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ 创建订单失败: {e}")
+            return False
+    
+    def get_order(self, order_id: str) -> Optional[PaymentOrder]:
+        """获取订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
+            row = c.fetchone()
+            conn.close()
+            
+            if not row:
+                return None
+            
+            return PaymentOrder(
+                order_id=row[0],
+                user_id=row[1],
+                plan_id=row[2],
+                amount=row[3],
+                status=OrderStatus(row[4]),
+                created_at=datetime.fromisoformat(row[5]),
+                expires_at=datetime.fromisoformat(row[6]),
+                tx_hash=row[7],
+                paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+            )
+        except Exception as e:
+            logger.error(f"❌ 获取订单失败: {e}")
+            return None
+    
+    def get_pending_orders(self) -> List[PaymentOrder]:
+        """获取所有待支付订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("SELECT * FROM orders WHERE status = ?", (OrderStatus.PENDING.value,))
+            rows = c.fetchall()
+            conn.close()
+            
+            orders = []
+            for row in rows:
+                orders.append(PaymentOrder(
+                    order_id=row[0],
+                    user_id=row[1],
+                    plan_id=row[2],
+                    amount=row[3],
+                    status=OrderStatus(row[4]),
+                    created_at=datetime.fromisoformat(row[5]),
+                    expires_at=datetime.fromisoformat(row[6]),
+                    tx_hash=row[7],
+                    paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                ))
+            
+            return orders
+        except Exception as e:
+            logger.error(f"❌ 获取待支付订单失败: {e}")
+            return []
+    
+    def get_user_pending_order(self, user_id: int) -> Optional[PaymentOrder]:
+        """获取用户的待支付订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT * FROM orders 
+                WHERE user_id = ? AND status = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id, OrderStatus.PENDING.value))
+            
+            row = c.fetchone()
+            conn.close()
+            
+            if not row:
+                return None
+            
+            return PaymentOrder(
+                order_id=row[0],
+                user_id=row[1],
+                plan_id=row[2],
+                amount=row[3],
+                status=OrderStatus(row[4]),
+                created_at=datetime.fromisoformat(row[5]),
+                expires_at=datetime.fromisoformat(row[6]),
+                tx_hash=row[7],
+                paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+            )
+        except Exception as e:
+            logger.error(f"❌ 获取用户待支付订单失败: {e}")
+            return None
+    
+    def update_order_status(self, order_id: str, status: OrderStatus, 
+                           tx_hash: Optional[str] = None) -> bool:
+        """更新订单状态"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            now = datetime.now(BEIJING_TZ).isoformat()
+            
+            if status == OrderStatus.PAID:
+                c.execute("""
+                    UPDATE orders 
+                    SET status = ?, tx_hash = ?, paid_at = ?
+                    WHERE order_id = ?
+                """, (status.value, tx_hash, now, order_id))
+            elif status == OrderStatus.COMPLETED:
+                c.execute("""
+                    UPDATE orders 
+                    SET status = ?, completed_at = ?
+                    WHERE order_id = ?
+                """, (status.value, now, order_id))
+            else:
+                c.execute("""
+                    UPDATE orders 
+                    SET status = ?
+                    WHERE order_id = ?
+                """, (status.value, order_id))
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ 订单状态更新: {order_id} -> {status.value}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ 更新订单状态失败: {e}")
+            return False
+    
+    def save_transaction(self, tx: TransactionRecord) -> bool:
+        """保存交易记录"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                INSERT OR REPLACE INTO transactions 
+                (tx_hash, from_address, to_address, amount, timestamp, 
+                 block_number, confirmations, contract_address, processed, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                tx.tx_hash,
+                tx.from_address,
+                tx.to_address,
+                tx.amount,
+                tx.timestamp,
+                tx.block_number,
+                tx.confirmations,
+                tx.contract_address,
+                1 if tx.processed else 0,
+                datetime.now(BEIJING_TZ).isoformat()
+            ))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"❌ 保存交易记录失败: {e}")
+            return False
+    
+    def is_transaction_processed(self, tx_hash: str) -> bool:
+        """检查交易是否已处理"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("SELECT processed FROM transactions WHERE tx_hash = ?", (tx_hash,))
+            row = c.fetchone()
+            conn.close()
+            
+            return bool(row and row[0] == 1)
+        except Exception as e:
+            logger.error(f"❌ 检查交易是否已处理失败: {e}")
+            return False
+
+# ================================
+# 订单管理器
+# ================================
+
+class OrderManager:
+    """订单管理器"""
+    
+    def __init__(self, db: PaymentDatabase):
+        self.db = db
+    
+    def create_payment_order(self, user_id: int, plan_id: str) -> Optional[PaymentOrder]:
+        """创建支付订单
+        
+        Args:
+            user_id: 用户ID
+            plan_id: 套餐ID
+            
+        Returns:
+            创建的订单对象，失败返回None
+        """
+        # 检查用户是否有待支付订单
+        existing_order = self.db.get_user_pending_order(user_id)
+        if existing_order:
+            # 检查是否过期
+            if datetime.now(BEIJING_TZ) < existing_order.expires_at.replace(tzinfo=BEIJING_TZ):
+                logger.warning(f"⚠️ 用户 {user_id} 已有待支付订单: {existing_order.order_id}")
+                return None
+            else:
+                # 过期订单，更新状态
+                self.db.update_order_status(existing_order.order_id, OrderStatus.EXPIRED)
+        
+        # 获取套餐信息
+        plan = PaymentConfig.PAYMENT_PLANS.get(plan_id)
+        if not plan:
+            logger.error(f"❌ 无效的套餐ID: {plan_id}")
+            return None
+        
+        # 生成订单ID
+        order_id = f"ORDER_{user_id}_{int(time.time())}_{random.randint(1000, 9999)}"
+        
+        # 生成金额（添加随机小数防止冲突）
+        base_amount = plan["price"]
+        random_decimal = random.randint(1, 9999) / 10000  # 0.0001 - 0.9999
+        amount = base_amount + random_decimal
+        
+        # 创建订单
+        now = datetime.now(BEIJING_TZ)
+        order = PaymentOrder(
+            order_id=order_id,
+            user_id=user_id,
+            plan_id=plan_id,
+            amount=amount,
+            status=OrderStatus.PENDING,
+            created_at=now,
+            expires_at=now + timedelta(minutes=PaymentConfig.ORDER_TIMEOUT_MINUTES)
+        )
+        
+        if self.db.create_order(order):
+            logger.info(f"✅ 订单创建成功: {order_id}, 用户: {user_id}, 金额: {amount:.4f} USDT")
+            return order
+        
+        return None
+    
+    def cancel_order(self, order_id: str) -> bool:
+        """取消订单"""
+        return self.db.update_order_status(order_id, OrderStatus.CANCELLED)
+    
+    def expire_old_orders(self):
+        """过期超时订单"""
+        orders = self.db.get_pending_orders()
+        now = datetime.now(BEIJING_TZ)
+        
+        for order in orders:
+            if now > order.expires_at.replace(tzinfo=BEIJING_TZ):
+                self.db.update_order_status(order.order_id, OrderStatus.EXPIRED)
+                logger.info(f"⏱️ 订单已过期: {order.order_id}")
+
+# ================================
+# TRON区块链监听器
+# ================================
+
+class TronUSDTMonitor:
+    """TRON USDT监听器"""
+    
+    def __init__(self, wallet_address: str, api_key: str = ""):
+        self.wallet_address = wallet_address
+        self.api_key = api_key
+        self.session: Optional[aiohttp.ClientSession] = None
+    
+    async def init_session(self):
+        """初始化HTTP会话"""
+        if not self.session:
+            headers = {}
+            if self.api_key:
+                headers["TRON-PRO-API-KEY"] = self.api_key
+            self.session = aiohttp.ClientSession(headers=headers)
+    
+    async def close_session(self):
+        """关闭HTTP会话"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+    
+    async def get_trc20_transactions(self, limit: int = 20) -> List[TransactionRecord]:
+        """获取TRC20转账记录
+        
+        Args:
+            limit: 获取数量
+            
+        Returns:
+            交易记录列表
+        """
+        await self.init_session()
+        
+        try:
+            # TronGrid API: 获取TRC20转账
+            url = f"{PaymentConfig.TRONGRID_API_BASE}/v1/accounts/{self.wallet_address}/transactions/trc20"
+            params = {
+                "limit": limit,
+                "only_to": "true",  # 只获取转入交易
+                "contract_address": PaymentConfig.USDT_CONTRACT
+            }
+            
+            async with self.session.get(url, params=params, timeout=30) as response:
+                if response.status != 200:
+                    logger.error(f"❌ TronGrid API 请求失败: {response.status}")
+                    return []
+                
+                data = await response.json()
+                
+                if not data.get("success"):
+                    logger.error(f"❌ TronGrid API 返回错误: {data}")
+                    return []
+                
+                transactions = []
+                for item in data.get("data", []):
+                    try:
+                        # 解析交易
+                        tx_hash = item.get("transaction_id")
+                        from_addr = item.get("from")
+                        to_addr = item.get("to")
+                        # USDT有6位小数
+                        value = int(item.get("value", "0"))
+                        amount = value / 1_000_000
+                        timestamp = item.get("block_timestamp", 0) // 1000
+                        block_number = item.get("block", 0)
+                        
+                        # 获取当前区块高度计算确认数
+                        current_block = await self.get_current_block_number()
+                        confirmations = max(0, current_block - block_number)
+                        
+                        tx = TransactionRecord(
+                            tx_hash=tx_hash,
+                            from_address=from_addr,
+                            to_address=to_addr,
+                            amount=amount,
+                            timestamp=timestamp,
+                            block_number=block_number,
+                            confirmations=confirmations,
+                            contract_address=PaymentConfig.USDT_CONTRACT
+                        )
+                        
+                        transactions.append(tx)
+                    except Exception as e:
+                        logger.error(f"❌ 解析交易失败: {e}")
+                        continue
+                
+                return transactions
+                
+        except asyncio.TimeoutError:
+            logger.error("❌ TronGrid API 请求超时")
+            return []
+        except Exception as e:
+            logger.error(f"❌ 获取TRC20交易失败: {e}")
+            return []
+    
+    async def get_current_block_number(self) -> int:
+        """获取当前区块高度"""
+        await self.init_session()
+        
+        try:
+            url = f"{PaymentConfig.TRONGRID_API_BASE}/wallet/getnowblock"
+            
+            async with self.session.post(url, timeout=10) as response:
+                if response.status != 200:
+                    return 0
+                
+                data = await response.json()
+                block_header = data.get("block_header", {})
+                raw_data = block_header.get("raw_data", {})
+                return raw_data.get("number", 0)
+        except Exception as e:
+            logger.error(f"❌ 获取当前区块高度失败: {e}")
+            return 0
+
+# ================================
+# Telegram通知器
+# ================================
+
+class TelegramNotifier:
+    """Telegram通知器"""
+    
+    def __init__(self, bot_token: str, notify_chat_id: str = ""):
+        self.bot_token = bot_token
+        self.notify_chat_id = notify_chat_id
+        self.api_base = f"https://api.telegram.org/bot{bot_token}"
+        self.session: Optional[aiohttp.ClientSession] = None
+    
+    async def init_session(self):
+        """初始化HTTP会话"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+    
+    async def close_session(self):
+        """关闭HTTP会话"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+    
+    async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
+        """发送消息"""
+        await self.init_session()
+        
+        try:
+            url = f"{self.api_base}/sendMessage"
+            data = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode
+            }
+            
+            async with self.session.post(url, json=data, timeout=10) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    logger.error(f"❌ 发送消息失败: {response.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"❌ 发送消息异常: {e}")
+            return False
+    
+    async def notify_payment_received(self, order: PaymentOrder, tx_hash: str):
+        """通知收款成功"""
+        plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
+        plan_name = plan.get("name", "未知套餐")
+        days = plan.get("days", 0)
+        
+        # 通知用户
+        user_msg = f"""
+<b>✅ 支付成功</b>
+
+您的支付已确认！会员已自动开通。
+
+<b>订单信息</b>
+• 订单号: <code>{order.order_id}</code>
+• 套餐: {plan_name}
+• 金额: {order.amount:.4f} USDT
+• 会员天数: {days} 天
+
+<b>交易信息</b>
+• 交易哈希: <code>{tx_hash}</code>
+
+感谢您的支持！🎉
+        """
+        
+        await self.send_message(order.user_id, user_msg)
+        
+        # 通知管理员
+        if self.notify_chat_id:
+            admin_msg = f"""
+<b>💰 收到新支付</b>
+
+<b>订单信息</b>
+• 订单号: <code>{order.order_id}</code>
+• 用户ID: {order.user_id}
+• 套餐: {plan_name}
+• 金额: {order.amount:.4f} USDT
+• 会员天数: {days} 天
+
+<b>交易信息</b>
+• 交易哈希: <code>{tx_hash}</code>
+• 查看: https://tronscan.org/#/transaction/{tx_hash}
+            """
+            await self.send_message(int(self.notify_chat_id), admin_msg)
+
+# ================================
+# 主服务类
+# ================================
+
+class TronPaymentService:
+    """TRON支付服务"""
+    
+    def __init__(self):
+        self.db = PaymentDatabase()
+        self.order_manager = OrderManager(self.db)
+        self.monitor = TronUSDTMonitor(
+            PaymentConfig.WALLET_ADDRESS,
+            PaymentConfig.TRONGRID_API_KEY
+        )
+        self.notifier = TelegramNotifier(
+            PaymentConfig.TELEGRAM_BOT_TOKEN,
+            PaymentConfig.TELEGRAM_NOTIFY_CHAT_ID
+        )
+        self.running = False
+    
+    async def start(self):
+        """启动服务"""
+        logger.info("🚀 TRON支付服务启动中...")
+        
+        # 验证配置
+        valid, msg = PaymentConfig.validate()
+        if not valid:
+            logger.error(f"❌ 配置验证失败: {msg}")
+            return
+        
+        logger.info(f"✅ {msg}")
+        logger.info(f"📡 监听钱包: {PaymentConfig.WALLET_ADDRESS}")
+        logger.info(f"⏱️ 轮询间隔: {PaymentConfig.POLL_INTERVAL_SECONDS}秒")
+        logger.info(f"🔐 最少确认数: {PaymentConfig.MIN_CONFIRMATIONS}")
+        
+        self.running = True
+        
+        try:
+            while self.running:
+                try:
+                    # 1. 过期超时订单
+                    self.order_manager.expire_old_orders()
+                    
+                    # 2. 获取待支付订单
+                    pending_orders = self.db.get_pending_orders()
+                    if not pending_orders:
+                        await asyncio.sleep(PaymentConfig.POLL_INTERVAL_SECONDS)
+                        continue
+                    
+                    logger.info(f"📊 当前待支付订单: {len(pending_orders)} 个")
+                    
+                    # 3. 获取最新交易
+                    transactions = await self.monitor.get_trc20_transactions(limit=50)
+                    logger.info(f"🔍 获取到 {len(transactions)} 笔交易")
+                    
+                    # 4. 匹配订单和交易
+                    for tx in transactions:
+                        # 检查是否已处理
+                        if self.db.is_transaction_processed(tx.tx_hash):
+                            continue
+                        
+                        # 检查确认数
+                        if tx.confirmations < PaymentConfig.MIN_CONFIRMATIONS:
+                            logger.info(f"⏳ 交易 {tx.tx_hash[:16]}... 确认数不足: {tx.confirmations}/{PaymentConfig.MIN_CONFIRMATIONS}")
+                            continue
+                        
+                        # 验证合约地址
+                        if tx.contract_address != PaymentConfig.USDT_CONTRACT:
+                            logger.warning(f"⚠️ 非官方USDT合约: {tx.contract_address}")
+                            continue
+                        
+                        # 匹配订单
+                        matched_order = None
+                        for order in pending_orders:
+                            # 金额精确匹配（保留4位小数）
+                            if abs(tx.amount - order.amount) < 0.0001:
+                                matched_order = order
+                                break
+                        
+                        if matched_order:
+                            logger.info(f"✅ 交易匹配成功: {tx.tx_hash[:16]}... -> 订单 {matched_order.order_id}")
+                            
+                            # 更新订单状态
+                            self.db.update_order_status(
+                                matched_order.order_id,
+                                OrderStatus.PAID,
+                                tx.tx_hash
+                            )
+                            
+                            # 授予会员
+                            success = await self.grant_membership(matched_order)
+                            
+                            if success:
+                                # 更新为完成状态
+                                self.db.update_order_status(
+                                    matched_order.order_id,
+                                    OrderStatus.COMPLETED
+                                )
+                                
+                                # 发送通知
+                                await self.notifier.notify_payment_received(
+                                    matched_order,
+                                    tx.tx_hash
+                                )
+                            
+                            # 标记交易已处理
+                            tx.processed = True
+                            self.db.save_transaction(tx)
+                        else:
+                            # 未匹配的交易也保存
+                            logger.info(f"ℹ️ 交易未匹配订单: {tx.amount:.4f} USDT")
+                            self.db.save_transaction(tx)
+                    
+                except Exception as e:
+                    logger.error(f"❌ 监听循环异常: {e}")
+                
+                # 等待下一次轮询
+                await asyncio.sleep(PaymentConfig.POLL_INTERVAL_SECONDS)
+                
+        finally:
+            await self.stop()
+    
+    async def stop(self):
+        """停止服务"""
+        logger.info("🛑 正在停止服务...")
+        self.running = False
+        await self.monitor.close_session()
+        await self.notifier.close_session()
+        logger.info("✅ 服务已停止")
+    
+    async def grant_membership(self, order: PaymentOrder) -> bool:
+        """授予会员
+        
+        Args:
+            order: 订单对象
+            
+        Returns:
+            是否成功
+        """
+        try:
+            # 获取套餐信息
+            plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id)
+            if not plan:
+                logger.error(f"❌ 无效的套餐ID: {order.plan_id}")
+                return False
+            
+            days = plan["days"]
+            
+            # 连接主数据库授予会员
+            conn = sqlite3.connect(PaymentConfig.MAIN_DB)
+            c = conn.cursor()
+            
+            # 检查用户是否已有会员记录
+            c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
+            row = c.fetchone()
+            
+            now = datetime.now(BEIJING_TZ)
+            
+            if row and row[0]:
+                # 已有会员，累加天数
+                expiry_time = datetime.fromisoformat(row[0])
+                # 如果已过期，从现在开始计算
+                if expiry_time < now:
+                    new_expiry = now + timedelta(days=days)
+                else:
+                    new_expiry = expiry_time + timedelta(days=days)
+                
+                c.execute("""
+                    UPDATE memberships 
+                    SET expiry_time = ?, level = '会员'
+                    WHERE user_id = ?
+                """, (new_expiry.isoformat(), order.user_id))
+            else:
+                # 新会员
+                new_expiry = now + timedelta(days=days)
+                c.execute("""
+                    INSERT INTO memberships (user_id, level, expiry_time)
+                    VALUES (?, '会员', ?)
+                """, (order.user_id, new_expiry.isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ 会员授予成功: 用户 {order.user_id}, 天数 {days}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ 授予会员失败: {e}")
+            return False
+
+# ================================
+# 主函数
+# ================================
+
+async def main():
+    """主函数"""
+    print("=" * 50)
+    print("🚀 TRON USDT-TRC20 支付监听服务")
+    print("=" * 50)
+    
+    service = TronPaymentService()
+    
+    try:
+        await service.start()
+    except KeyboardInterrupt:
+        print("\n👋 服务已停止")
+    except Exception as e:
+        logger.error(f"❌ 服务异常: {e}")
+    finally:
+        await service.stop()
+
+if __name__ == "__main__":
+    asyncio.run(main())
