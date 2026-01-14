@@ -12760,6 +12760,14 @@ class EnhancedBot:
             self.handle_vip_menu(query)
         elif data == "vip_redeem":
             self.handle_vip_redeem(query)
+        elif data == "usdt_payment":
+            self.handle_usdt_payment(query)
+        elif data.startswith("usdt_plan_"):
+            plan_id = "plan_" + data.split("_")[-1]  # usdt_plan_7d -> plan_7d
+            self.handle_usdt_plan_select(query, plan_id)
+        elif data.startswith("cancel_order_"):
+            order_id = data.replace("cancel_order_", "")
+            self.handle_cancel_order(query, order_id)
         elif data == "admin_card_menu":
             self.handle_admin_card_menu(query)
         elif data.startswith("admin_card_days_"):
@@ -17111,10 +17119,230 @@ class EnhancedBot:
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(user_id, 'member_btn_redeem'), callback_data="vip_redeem")],
+            [InlineKeyboardButton("💎 USDT充值购买", callback_data="usdt_payment")],
             [InlineKeyboardButton(f"🔙 {t(user_id, 'btn_back_to_menu')}", callback_data="back_to_main")]
         ])
         
         self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_usdt_payment(self, query):
+        """显示USDT支付菜单"""
+        user_id = query.from_user.id
+        query.answer()
+        
+        # 检查是否有待支付订单
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from tron import PaymentDatabase, OrderStatus
+            
+            payment_db = PaymentDatabase()
+            existing_order = payment_db.get_user_pending_order(user_id)
+            
+            if existing_order:
+                # 检查是否过期
+                from datetime import datetime, timezone, timedelta
+                BEIJING_TZ = timezone(timedelta(hours=8))
+                now = datetime.now(BEIJING_TZ)
+                expires_at = existing_order.expires_at.replace(tzinfo=BEIJING_TZ)
+                
+                if now < expires_at:
+                    # 有未过期订单，提示用户
+                    remaining_minutes = int((expires_at - now).total_seconds() / 60)
+                    text = f"""
+<b>⚠️ 您已有待支付订单</b>
+
+订单号: <code>{existing_order.order_id}</code>
+金额: <b>{existing_order.amount:.4f} USDT</b>
+剩余时间: <b>{remaining_minutes} 分钟</b>
+
+请先完成或取消当前订单。
+                    """
+                    
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ 取消当前订单", callback_data=f"cancel_order_{existing_order.order_id}")],
+                        [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
+                    ])
+                    
+                    self.safe_edit_message(query, text, 'HTML', keyboard)
+                    return
+        except Exception as e:
+            logger.error(f"检查待支付订单失败: {e}")
+        
+        text = """
+<b>💎 USDT充值购买会员</b>
+
+选择您想要购买的套餐：
+
+<b>💰 套餐说明</b>
+• 支持 USDT-TRC20 支付
+• 金额随机小数，避免冲突
+• 订单有效期 10 分钟
+• 支付后自动到账
+
+<b>🔒 安全保障</b>
+• 20次区块确认
+• 官方USDT合约验证
+• 精确金额匹配
+• 防重复发放
+
+请选择套餐：
+        """
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("7天会员 - 5 USDT", callback_data="usdt_plan_7d")],
+            [InlineKeyboardButton("30天会员 - 15 USDT", callback_data="usdt_plan_30d")],
+            [InlineKeyboardButton("120天会员 - 50 USDT", callback_data="usdt_plan_120d")],
+            [InlineKeyboardButton("365天会员 - 100 USDT", callback_data="usdt_plan_365d")],
+            [InlineKeyboardButton("🔙 返回会员中心", callback_data="vip_menu")]
+        ])
+        
+        self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_usdt_plan_select(self, query, plan_id: str):
+        """处理套餐选择"""
+        user_id = query.from_user.id
+        query.answer()
+        
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from tron import PaymentConfig, OrderManager, PaymentDatabase, QRCodeGenerator
+            from io import BytesIO
+            
+            # 创建订单
+            payment_db = PaymentDatabase()
+            order_manager = OrderManager(payment_db)
+            
+            order = order_manager.create_payment_order(user_id, plan_id)
+            
+            if not order:
+                self.safe_edit_message(query, "❌ 创建订单失败，请稍后重试", 'HTML')
+                return
+            
+            # 获取套餐信息
+            plan = PaymentConfig.PAYMENT_PLANS.get(plan_id, {})
+            plan_name = plan.get("name", "未知套餐")
+            days = plan.get("days", 0)
+            
+            # 生成二维码
+            qr_bytes = QRCodeGenerator.generate_payment_qr(
+                PaymentConfig.WALLET_ADDRESS,
+                order.amount
+            )
+            
+            # 计算过期时间
+            from datetime import datetime, timezone, timedelta
+            BEIJING_TZ = timezone(timedelta(hours=8))
+            now = datetime.now(BEIJING_TZ)
+            expires_at = order.expires_at.replace(tzinfo=BEIJING_TZ)
+            remaining_minutes = int((expires_at - now).total_seconds() / 60)
+            
+            # 发送二维码和支付信息
+            caption = f"""
+<b>💳 支付订单</b>
+
+<b>订单信息</b>
+• 订单号: <code>{order.order_id}</code>
+• 套餐: {plan_name}
+• 会员天数: {days} 天
+• 支付金额: <b>{order.amount:.4f} USDT</b>
+• 有效期: {remaining_minutes} 分钟
+
+<b>收款地址</b>
+<code>{PaymentConfig.WALLET_ADDRESS}</code>
+（点击可复制）
+
+<b>⚠️ 重要提示</b>
+1. 请使用 USDT-TRC20 转账
+2. 金额必须精确到小数点后4位
+3. 请在{remaining_minutes}分钟内完成支付
+4. 支付后自动到账，无需手动确认
+
+<b>扫码支付</b>
+使用支持TRC20的钱包扫描下方二维码
+            """
+            
+            # 发送二维码图片
+            try:
+                from telegram import InputFile
+                photo = InputFile(BytesIO(qr_bytes), filename="payment_qr.png")
+                # 使用bot实例发送图片
+                query.message.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"发送二维码失败: {e}")
+                # 如果发送图片失败，至少发送文本信息
+                try:
+                    query.message.bot.send_message(
+                        chat_id=user_id,
+                        text=caption,
+                        parse_mode='HTML'
+                    )
+                except Exception as e2:
+                    logger.error(f"发送文本也失败: {e2}")
+            
+            # 更新原消息
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ 取消订单", callback_data=f"cancel_order_{order.order_id}")],
+                [InlineKeyboardButton("🔙 返回支付菜单", callback_data="usdt_payment")]
+            ])
+            
+            text = f"""
+<b>✅ 订单已创建</b>
+
+订单号: <code>{order.order_id}</code>
+请查看上方支付信息完成支付
+            """
+            
+            self.safe_edit_message(query, text, 'HTML', keyboard)
+            
+        except Exception as e:
+            logger.error(f"处理套餐选择失败: {e}")
+            self.safe_edit_message(query, f"❌ 创建订单失败: {e}", 'HTML')
+    
+    def handle_cancel_order(self, query, order_id: str):
+        """处理取消订单"""
+        user_id = query.from_user.id
+        query.answer()
+        
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from tron import PaymentDatabase, OrderManager
+            
+            payment_db = PaymentDatabase()
+            order_manager = OrderManager(payment_db)
+            
+            # 取消订单
+            success = order_manager.cancel_order(order_id)
+            
+            if success:
+                text = """
+<b>✅ 订单已取消</b>
+
+您可以重新创建订单。
+                """
+            else:
+                text = """
+<b>❌ 取消订单失败</b>
+
+订单可能已过期或不存在。
+                """
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 返回支付菜单", callback_data="usdt_payment")]
+            ])
+            
+            self.safe_edit_message(query, text, 'HTML', keyboard)
+            
+        except Exception as e:
+            logger.error(f"取消订单失败: {e}")
+            self.safe_edit_message(query, f"❌ 操作失败: {e}", 'HTML')
     
     def handle_vip_redeem(self, query):
         """处理兑换卡密"""

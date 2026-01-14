@@ -1,0 +1,17 @@
+[Unit]
+Description=TRON USDT-TRC20 Payment Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/tdatabot
+Environment="PATH=/usr/bin:/usr/local/bin"
+ExecStart=/usr/bin/python3 /path/to/tdatabot/tron.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/path/to/tdatabot/tron.log
+StandardError=append:/path/to/tdatabot/tron.log
+
+[Install]
+WantedBy=multi-user.target
