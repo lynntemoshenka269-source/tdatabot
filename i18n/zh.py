@@ -2776,4 +2776,91 @@ TEXTS = {
     'broadcast_detail_results': '📈 发送结果',
     'broadcast_detail_duration': '用时',
     'broadcast_detail_content': '📄 内容',
+    
+    # ===== USDT 支付系统 =====
+    # 支付菜单
+    'payment_menu_title': '💎 USDT 支付',
+    'payment_menu_desc': '请选择会员套餐：',
+    'payment_plan_7d': '7天会员 - 5 USDT',
+    'payment_plan_30d': '30天会员 - 15 USDT',
+    'payment_plan_120d': '120天会员 - 50 USDT',
+    'payment_plan_365d': '365天会员 - 100 USDT',
+    'btn_back_payment_menu': '🔙 返回支付菜单',
+    
+    # 订单创建
+    'payment_order_created': '✅ 订单已创建',
+    'payment_order_id': '订单号',
+    'payment_order_info': '请查看上方支付信息完成支付',
+    'payment_amount': '支付金额',
+    'payment_plan': '套餐',
+    'payment_days': '会员天数',
+    'payment_valid_time': '有效期',
+    'payment_minutes': '分钟',
+    'payment_seconds': '秒',
+    
+    # 收款地址
+    'payment_wallet_address': '收款地址',
+    'payment_address_click_copy': '(点击可复制)',
+    
+    # 重要提示
+    'payment_important_notice': '⚠️ 重要提示',
+    'payment_notice_1': '1. 请使用 USDT-TRC20 转账',
+    'payment_notice_2': '2. 金额必须精确到小数点后4位',
+    'payment_notice_3': '3. 请在有效期内完成支付',
+    'payment_notice_4': '4. 支付后自动到账，无需手动确认',
+    
+    # 扫码支付
+    'payment_scan_qr': '扫码支付',
+    'payment_scan_desc': '使用支持TRC20的钱包扫描下方二维码',
+    
+    # 按钮
+    'btn_cancel_order': '❌ 取消订单',
+    'btn_back_main_menu': '🔙 返回主菜单',
+    'btn_repurchase': '💎 重新购买',
+    
+    # 订单取消
+    'payment_order_cancelled': '❌ 订单已取消',
+    'payment_order_cancelled_title': '订单已取消',
+    'payment_order_cancelled_status': '已取消',
+    'payment_repurchase_hint': '如需购买会员，请重新选择套餐。',
+    
+    # 订单超时
+    'payment_order_expired': '⏱️ 订单已超时',
+    'payment_order_expired_title': '订单已超时',
+    'payment_order_expired_status': '已超时',
+    'payment_expired_hint': '订单已超过有效期，如需购买会员请重新下单。',
+    
+    # 支付成功
+    'payment_success_title': '🎉🎉🎉 支付成功！🎉🎉🎉',
+    'payment_success_confirmed': '您的支付已确认，会员已自动开通！',
+    'payment_order_info_title': '订单信息',
+    'payment_member_days': '会员天数',
+    'payment_member_expiry': '会员到期',
+    'payment_thanks': '感谢您的支持！💎',
+    'payment_tx_info_title': '交易信息',
+    'payment_tx_hash': '交易哈希',
+    
+    # 管理员通知
+    'payment_admin_new_order': '💰 收到新充值订单',
+    'payment_user_id': '用户ID',
+    'payment_address_info': '地址信息',
+    'payment_receive_address': '✅ 接收地址',
+    'payment_send_address': '🅾️ 发送地址',
+    'btn_view_transaction': '🔍 查看交易明细',
+    
+    # 错误消息
+    'payment_error_existing_order': '❌ 您已有待支付订单，请先完成或取消',
+    'payment_error_create_failed': '❌ 创建订单失败，请稍后重试',
+    'payment_error_invalid_plan': '❌ 无效的套餐',
+    'payment_error_not_found': '❌ 订单不存在',
+    'payment_error_already_paid': '❌ 订单已支付',
+    'payment_error_expired': '❌ 订单已过期',
+    
+    # 状态
+    'payment_status': '状态',
+    'payment_status_pending': '待支付',
+    'payment_status_paid': '已支付',
+    'payment_status_completed': '已完成',
+    'payment_status_expired': '已过期',
+    'payment_status_cancelled': '已取消',
 }
