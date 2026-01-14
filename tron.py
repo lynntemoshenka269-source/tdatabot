@@ -773,80 +773,129 @@ class TelegramNotifier:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
     
-    async def send_message(self, chat_id: int, text: str) -> bool:
-        """发送消息"""
-        try:
-            if not self.bot_token:
-                logger.error("❌ BOT_TOKEN 未配置，无法发送消息")
-                return False
-            
-            await self.ensure_session()
-            
-            url = f"{self.api_base}/sendMessage"
-            data = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML"
-            }
-            
-            logger.info(f"📤 发送消息到 {chat_id}...")
-            
-            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                result = await response.json()
-                
-                if result.get("ok"):
-                    logger.info(f"✅ 消息发送成功: {chat_id}")
-                    return True
-                else:
-                    error_desc = result.get("description", "未知错误")
-                    logger.error(f"❌ Telegram API 错误: {error_desc}")
+    async def send_message(self, chat_id: int, text: str, retry: int = 3) -> bool:
+        """发送消息 - 带重试"""
+        for attempt in range(retry):
+            try:
+                if not self.bot_token:
+                    logger.error("❌ BOT_TOKEN 未配置，无法发送消息")
                     return False
+                
+                await self.ensure_session()
+                
+                url = f"{self.api_base}/sendMessage"
+                data = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                }
+                
+                logger.info(f"📤 发送消息到 {chat_id}... (尝试 {attempt + 1}/{retry})")
+                
+                # 增加超时时间到 60 秒
+                timeout = aiohttp.ClientTimeout(total=60)
+                async with self.session.post(url, json=data, timeout=timeout) as response:
+                    result = await response.json()
                     
-        except aiohttp.ClientError as e:
-            logger.error(f"❌ 网络请求失败: {type(e).__name__}: {e}")
-            return False
-        except asyncio.TimeoutError:
-            logger.error(f"❌ 发送消息超时: {chat_id}")
-            return False
-        except Exception as e:
-            logger.error(f"❌ 发送消息异常: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+                    if result.get("ok"):
+                        logger.info(f"✅ 消息发送成功: {chat_id}")
+                        return True
+                    else:
+                        error = result.get("description", "未知错误")
+                        logger.error(f"❌ Telegram API 错误: {error}")
+                        # 如果是用户屏蔽了 bot，不需要重试
+                        if "bot was blocked" in error.lower() or "user is deactivated" in error.lower():
+                            return False
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ 发送消息超时 (尝试 {attempt + 1}/{retry})")
+                if attempt < retry - 1:
+                    await asyncio.sleep(2)  # 等待 2 秒后重试
+                    continue
+            except aiohttp.ClientError as e:
+                logger.warning(f"🌐 网络错误: {type(e).__name__}: {e} (尝试 {attempt + 1}/{retry})")
+                if attempt < retry - 1:
+                    await asyncio.sleep(2)
+                    continue
+            except Exception as e:
+                logger.error(f"❌ 发送消息异常: {type(e).__name__}: {e}")
+                if attempt < retry - 1:
+                    await asyncio.sleep(2)
+                    continue
+        
+        logger.error(f"❌ 发送消息最终失败: {chat_id}")
+        return False
     
     async def close(self):
         """关闭 session"""
         if self.session and not self.session.closed:
             await self.session.close()
     
-    async def send_sticker(self, chat_id: int, sticker_id: str) -> bool:
-        """发送贴纸"""
-        try:
-            await self.ensure_session()
-            url = f"{self.api_base}/sendSticker"
-            data = {"chat_id": chat_id, "sticker": sticker_id}
-            async with self.session.post(url, json=data, timeout=10) as response:
-                return response.status == 200
-        except:
-            return False
+    async def send_sticker(self, chat_id: int, sticker_id: str, retry: int = 2) -> bool:
+        """发送贴纸 - 带重试"""
+        for attempt in range(retry):
+            try:
+                await self.ensure_session()
+                url = f"{self.api_base}/sendSticker"
+                data = {
+                    "chat_id": chat_id,
+                    "sticker": sticker_id
+                }
+                
+                logger.info(f"🎉 发送贴纸到 {chat_id}... (尝试 {attempt + 1}/{retry})")
+                
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with self.session.post(url, json=data, timeout=timeout) as response:
+                    result = await response.json()
+                    if result.get("ok"):
+                        logger.info(f"✅ 贴纸发送成功: {chat_id}")
+                        return True
+                    else:
+                        error = result.get("description", "未知错误")
+                        logger.warning(f"发送贴纸失败: {error}")
+                        if "bot was blocked" in error.lower():
+                            return False
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ 发送贴纸超时 (尝试 {attempt + 1}/{retry})")
+            except Exception as e:
+                logger.warning(f"发送贴纸异常: {type(e).__name__}: {e}")
+            
+            if attempt < retry - 1:
+                await asyncio.sleep(1)
+        
+        logger.warning(f"⚠️ 发送贴纸最终失败: {chat_id}")
+        return False
     
-    async def delete_message(self, chat_id: int, message_id: int) -> bool:
-        """删除消息"""
-        try:
-            await self.ensure_session()
-            url = f"{self.api_base}/deleteMessage"
-            data = {"chat_id": chat_id, "message_id": message_id}
-            async with self.session.post(url, json=data, timeout=10) as response:
-                result = await response.json()
-                if result.get("ok"):
-                    logger.info(f"✅ 已删除消息: {message_id}")
-                    return True
-                else:
-                    logger.warning(f"删除消息失败: {result}")
-                    return False
-        except Exception as e:
-            logger.warning(f"删除消息异常: {e}")
-            return False
+    async def delete_message(self, chat_id: int, message_id: int, retry: int = 2) -> bool:
+        """删除消息 - 带重试"""
+        for attempt in range(retry):
+            try:
+                await self.ensure_session()
+                url = f"{self.api_base}/deleteMessage"
+                data = {"chat_id": chat_id, "message_id": message_id}
+                
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with self.session.post(url, json=data, timeout=timeout) as response:
+                    result = await response.json()
+                    if result.get("ok"):
+                        return True
+                    else:
+                        error = result.get("description", "")
+                        # 消息不存在或已删除，不需要重试
+                        if "message to delete not found" in error.lower() or "message can't be deleted" in error.lower():
+                            return False
+                        logger.warning(f"删除消息失败: {error}")
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"删除消息超时 (尝试 {attempt + 1}/{retry})")
+            except Exception as e:
+                logger.warning(f"删除消息异常: {e}")
+            
+            if attempt < retry - 1:
+                await asyncio.sleep(1)
+        
+        return False
     
     async def send_message_with_keyboard(self, chat_id: int, text: str, keyboard) -> bool:
         """发送带键盘的消息"""
@@ -867,41 +916,38 @@ class TelegramNotifier:
             return False
     
     async def notify_payment_received(self, order: PaymentOrder, tx_hash: str, tx_info: dict = None):
-        """通知收款成功 - 添加庆祝动画"""
+        """通知收款成功"""
+        logger.info(f"🔔 开始发送支付成功通知: 用户 {order.user_id}, 订单 {order.order_id}")
+        
         plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
         plan_name = plan.get("name", "未知套餐")
         days = plan.get("days", 0)
         
-        # 1. 先删除原订单消息（包含二维码）
+        # 1. 删除原消息
         try:
             message_id = self.db.get_order_message_id(order.order_id)
             if message_id:
-                await self.delete_message(order.user_id, message_id)
+                deleted = await self.delete_message(order.user_id, message_id)
+                if deleted:
+                    logger.info(f"✅ 已删除订单消息: {message_id}")
+                else:
+                    logger.warning(f"⚠️ 删除订单消息失败: {message_id}")
+            else:
+                logger.warning(f"⚠️ 未找到订单消息ID: {order.order_id}")
         except Exception as e:
-            logger.warning(f"删除订单消息失败: {e}")
+            logger.warning(f"⚠️ 删除消息异常: {type(e).__name__}: {e}")
         
-        # 先发送庆祝贴纸（使用 Telegram 内置庆祝贴纸）
-        try:
-            # 常用的庆祝贴纸 ID
-            celebration_stickers = [
-                "CAACAgIAAxkBAAFAr4hpZ4gcZrgcsdUcW-1DFfn8MqzMcgAC1hgAAt_skUmRnB_mBcJtujgE",  # 默认贴纸
-                "🎉"  # 如果没有sticker ID，使用emoji
-            ]
-            # 尝试发送贴纸，如果失败则跳过
-            for sticker in celebration_stickers:
-                try:
-                    await self.send_sticker(order.user_id, sticker)
-                    break
-                except:
-                    continue
-        except:
-            pass
+        # 2. 发送庆祝贴纸
+        logger.info(f"🎉 准备发送庆祝贴纸到 {order.user_id}...")
+        sticker_id = "CAACAgIAAxkBAAFAr4hpZ4gcZrgcsdUcW-1DFfn8MqzMcgAC1hgAAt_skUmRnB_mBcJtujgE"
+        sticker_sent = await self.send_sticker(order.user_id, sticker_id)
+        if sticker_sent:
+            logger.info(f"✅ 贴纸发送成功")
+            await asyncio.sleep(0.5)  # 短暂等待
+        else:
+            logger.warning(f"⚠️ 贴纸发送失败，继续发送文字消息...")
         
-        # 计算会员到期时间
-        from datetime import datetime, timedelta, timezone
-        BEIJING_TZ = timezone(timedelta(hours=8))
-        
-        # 从数据库获取会员到期时间
+        # 3. 获取会员到期时间
         expiry_time = "未知"
         try:
             conn = sqlite3.connect(PaymentConfig.MAIN_DB)
@@ -920,7 +966,7 @@ class TelegramNotifier:
         except Exception as e:
             logger.warning(f"获取会员到期时间失败: {e}")
         
-        # 通知用户
+        # 4. 发送用户成功消息
         user_msg = f"""
 🎉🎉🎉 <b>支付成功！</b> 🎉🎉🎉
 
@@ -936,10 +982,16 @@ class TelegramNotifier:
 感谢您的支持！💎
         """
         
-        await self.send_message(order.user_id, user_msg)
+        logger.info(f"📝 准备发送成功消息到 {order.user_id}...")
+        msg_sent = await self.send_message(order.user_id, user_msg)
+        if msg_sent:
+            logger.info(f"✅ 用户成功消息发送完成: {order.user_id}")
+        else:
+            logger.error(f"❌ 用户成功消息发送失败: {order.user_id}")
         
-        # 通知管理员
+        # 5. 发送管理员通知
         if self.notify_chat_id:
+            logger.info(f"📢 准备发送管理员通知...")
             # 获取地址信息（如果有）
             from_address = "未知"
             to_address = PaymentConfig.WALLET_ADDRESS
