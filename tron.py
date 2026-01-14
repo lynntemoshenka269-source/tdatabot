@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import random
 import logging
+from dotenv import load_dotenv
+load_dotenv()  # 加载 .env 文件
 
 # 配置日志
 logging.basicConfig(
