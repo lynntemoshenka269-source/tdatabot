@@ -1020,7 +1020,7 @@ class TronPaymentService:
         logger.info("✅ 服务已停止")
     
     async def grant_membership(self, order: PaymentOrder) -> bool:
-        """授予会员
+        """授予会员 - 使用与 tdata.py 相同的数据库和格式
         
         Args:
             order: 订单对象
@@ -1041,16 +1041,22 @@ class TronPaymentService:
             conn = sqlite3.connect(PaymentConfig.MAIN_DB)
             c = conn.cursor()
             
-            # 自动建表：确保 memberships 表存在
+            # 自动建表：确保 memberships 表存在（与 tdata.py 相同的结构）
             c.execute("""
                 CREATE TABLE IF NOT EXISTS memberships (
                     user_id INTEGER PRIMARY KEY,
-                    level TEXT DEFAULT '会员',
-                    expiry_time TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
+                    level TEXT,
+                    trial_expiry_time TEXT,
+                    created_at TEXT
                 )
             """)
+            
+            # 添加 expiry_time 列（如果不存在）
+            try:
+                c.execute("ALTER TABLE memberships ADD COLUMN expiry_time TEXT")
+            except sqlite3.OperationalError:
+                # 列已存在，忽略
+                pass
             
             # 检查用户是否已有会员记录
             c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
@@ -1059,35 +1065,41 @@ class TronPaymentService:
             now = datetime.now(BEIJING_TZ)
             
             if row and row[0]:
-                # 已有会员，累加天数
-                expiry_time = datetime.fromisoformat(row[0])
-                # 如果已过期，从现在开始计算
-                if expiry_time < now:
-                    new_expiry = now + timedelta(days=days)
-                else:
-                    new_expiry = expiry_time + timedelta(days=days)
-                
-                c.execute("""
-                    UPDATE memberships 
-                    SET expiry_time = ?, level = '会员'
-                    WHERE user_id = ?
-                """, (new_expiry.isoformat(), order.user_id))
+                # 已有到期时间，从到期时间继续累加
+                try:
+                    # Database stores naive datetime strings, parse with strptime
+                    current_expiry = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                    # 如果到期时间在未来，从到期时间累加
+                    if current_expiry > now.replace(tzinfo=None):
+                        new_expiry = current_expiry + timedelta(days=days)
+                    else:
+                        # 已过期，从当前时间累加
+                        new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
+                except Exception as e:
+                    logger.warning(f"解析到期时间失败: {e}，从当前时间计算")
+                    new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
             else:
-                # 新会员
-                new_expiry = now + timedelta(days=days)
-                c.execute("""
-                    INSERT INTO memberships (user_id, level, expiry_time)
-                    VALUES (?, '会员', ?)
-                """, (order.user_id, new_expiry.isoformat()))
+                # 新会员，从当前时间累加
+                new_expiry = now.replace(tzinfo=None) + timedelta(days=days)
+            
+            # 使用 INSERT OR REPLACE 和与 tdata.py 相同的格式
+            c.execute("""
+                INSERT OR REPLACE INTO memberships 
+                (user_id, level, expiry_time, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (order.user_id, '会员', new_expiry.strftime("%Y-%m-%d %H:%M:%S"), 
+                  now.strftime("%Y-%m-%d %H:%M:%S")))
             
             conn.commit()
             conn.close()
             
-            logger.info(f"✅ 会员授予成功: 用户 {order.user_id}, 天数 {days}")
+            logger.info(f"✅ 会员授予成功: 用户 {order.user_id}, 天数 {days}, 到期 {new_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
             return True
             
         except Exception as e:
             logger.error(f"❌ 授予会员失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 # ================================
