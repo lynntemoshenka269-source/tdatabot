@@ -12765,8 +12765,12 @@ class EnhancedBot:
         elif data.startswith("usdt_plan_"):
             plan_id = "plan_" + data.split("_")[-1]  # usdt_plan_7d -> plan_7d
             self.handle_usdt_plan_select(query, plan_id)
-        elif data.startswith("cancel_order_"):
-            order_id = data.replace("cancel_order_", "")
+        elif data.startswith("cancel_order"):
+            # Support both formats: cancel_order_ID and cancel_order:ID
+            if ":" in data:
+                order_id = data.split(":", 1)[1]
+            else:
+                order_id = data.replace("cancel_order_", "")
             self.handle_cancel_order(query, order_id)
         elif data == "admin_card_menu":
             self.handle_admin_card_menu(query)
@@ -17267,12 +17271,18 @@ class EnhancedBot:
             try:
                 from telegram import InputFile
                 photo = InputFile(BytesIO(qr_bytes), filename="payment_qr.png")
+                # 添加取消订单按钮
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ 取消订单", callback_data=f"cancel_order:{order.order_id}")],
+                    [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_main")]
+                ])
                 # 使用bot实例发送图片
                 query.message.bot.send_photo(
                     chat_id=user_id,
                     photo=photo,
                     caption=caption,
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=keyboard
                 )
             except Exception as e:
                 logger.error(f"发送二维码失败: {e}")
