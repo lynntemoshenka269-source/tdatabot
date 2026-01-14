@@ -884,7 +884,7 @@ class TelegramNotifier:
         try:
             # 常用的庆祝贴纸 ID
             celebration_stickers = [
-                "CAACAgIAAxkBAAEBxxxxxx",  # 默认贴纸
+                "CAACAgIAAxkBAAFAr4hpZ4gcZrgcsdUcW-1DFfn8MqzMcgAC1hgAAt_skUmRnB_mBcJtujgE",  # 默认贴纸
                 "🎉"  # 如果没有sticker ID，使用emoji
             ]
             # 尝试发送贴纸，如果失败则跳过
