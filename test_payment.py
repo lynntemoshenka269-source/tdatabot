@@ -303,6 +303,110 @@ def test_security_checks():
     os.remove(temp_db)
     print()
 
+def test_admin_query_methods():
+    """测试管理员查询方法"""
+    print("🧪 测试管理员查询方法...")
+    from tron import PaymentDatabase, OrderManager, OrderStatus, PaymentConfig
+    from datetime import datetime, timedelta, timezone
+    
+    # 使用临时数据库
+    temp_db = tempfile.mktemp(suffix=".db")
+    db = PaymentDatabase(temp_db)
+    manager = OrderManager(db)
+    
+    BEIJING_TZ = timezone(timedelta(hours=8))
+    
+    # 创建多个测试订单
+    user_ids = [1001, 1002, 1001, 1003]
+    plan_ids = ["plan_7d", "plan_30d", "plan_7d", "plan_120d"]
+    
+    orders = []
+    for user_id, plan_id in zip(user_ids, plan_ids):
+        order = manager.create_payment_order(user_id, plan_id)
+        assert order is not None, f"订单创建失败: user={user_id}, plan={plan_id}"
+        orders.append(order)
+    
+    # 将第一个订单标记为已完成
+    db.update_order_status(orders[0].order_id, OrderStatus.COMPLETED, "test_tx_hash_1")
+    
+    # 将第二个订单标记为已取消
+    db.update_order_status(orders[1].order_id, OrderStatus.CANCELLED)
+    
+    print(f"   ✅ 创建了 {len(orders)} 个测试订单")
+    
+    # 测试 get_orders_stats
+    stats = db.get_orders_stats()
+    assert stats['total_count'] == 4, f"总订单数应为4，实际为{stats['total_count']}"
+    assert stats['completed_count'] == 1, f"已完成订单数应为1，实际为{stats['completed_count']}"
+    assert stats['cancelled_count'] == 1, f"已取消订单数应为1，实际为{stats['cancelled_count']}"
+    assert stats['pending_count'] == 2, f"待支付订单数应为2，实际为{stats['pending_count']}"
+    print(f"   ✅ get_orders_stats: 总计{stats['total_count']}笔，已完成{stats['completed_count']}笔")
+    
+    # 测试 get_today_stats
+    today_stats = db.get_today_stats()
+    assert today_stats['total_count'] == 4, f"今日订单数应为4，实际为{today_stats['total_count']}"
+    print(f"   ✅ get_today_stats: 今日{today_stats['total_count']}笔订单")
+    
+    # 测试 get_week_stats
+    week_stats = db.get_week_stats()
+    assert week_stats['total_count'] == 4, f"本周订单数应为4，实际为{week_stats['total_count']}"
+    print(f"   ✅ get_week_stats: 本周{week_stats['total_count']}笔订单")
+    
+    # 测试 get_month_stats
+    month_stats = db.get_month_stats()
+    assert month_stats['total_count'] == 4, f"本月订单数应为4，实际为{month_stats['total_count']}"
+    print(f"   ✅ get_month_stats: 本月{month_stats['total_count']}笔订单")
+    
+    # 测试 get_orders_by_user
+    user_orders = db.get_orders_by_user(1001)
+    assert len(user_orders) == 2, f"用户1001应有2笔订单，实际为{len(user_orders)}"
+    print(f"   ✅ get_orders_by_user: 用户1001有{len(user_orders)}笔订单")
+    
+    # 测试 get_orders_by_date_range
+    now = datetime.now(BEIJING_TZ)
+    start_date = now - timedelta(days=1)
+    end_date = now + timedelta(days=1)
+    date_orders = db.get_orders_by_date_range(start_date, end_date)
+    assert len(date_orders) == 4, f"日期范围内应有4笔订单，实际为{len(date_orders)}"
+    print(f"   ✅ get_orders_by_date_range: 找到{len(date_orders)}笔订单")
+    
+    # 测试 get_orders_paginated
+    page1_orders, total_pages = db.get_orders_paginated(page=1, per_page=2)
+    assert len(page1_orders) == 2, f"第1页应有2笔订单，实际为{len(page1_orders)}"
+    assert total_pages == 2, f"总页数应为2，实际为{total_pages}"
+    print(f"   ✅ get_orders_paginated: 第1页2笔订单，共{total_pages}页")
+    
+    page2_orders, _ = db.get_orders_paginated(page=2, per_page=2)
+    assert len(page2_orders) == 2, f"第2页应有2笔订单，实际为{len(page2_orders)}"
+    print(f"   ✅ get_orders_paginated: 第2页2笔订单")
+    
+    # 测试分页过滤 - 按状态
+    completed_orders, _ = db.get_orders_paginated(page=1, per_page=10, status=OrderStatus.COMPLETED.value)
+    assert len(completed_orders) == 1, f"已完成订单应为1笔，实际为{len(completed_orders)}"
+    print(f"   ✅ get_orders_paginated (completed): {len(completed_orders)}笔")
+    
+    # 测试分页过滤 - 按用户
+    user_page_orders, _ = db.get_orders_paginated(page=1, per_page=10, user_id=1001)
+    assert len(user_page_orders) == 2, f"用户1001应有2笔订单，实际为{len(user_page_orders)}"
+    print(f"   ✅ get_orders_paginated (user_id=1001): {len(user_page_orders)}笔")
+    
+    # 测试 export_orders_csv
+    csv_content = db.export_orders_csv()
+    assert csv_content, "CSV导出内容不应为空"
+    assert "订单号" in csv_content, "CSV应包含表头"
+    lines = csv_content.strip().split('\n')
+    assert len(lines) >= 5, f"CSV应至少有5行（表头+4笔订单），实际为{len(lines)}行"
+    print(f"   ✅ export_orders_csv: 导出成功，{len(lines)}行")
+    
+    # 测试按日期范围导出CSV
+    csv_filtered = db.export_orders_csv(start_date=start_date, end_date=end_date)
+    assert csv_filtered, "过滤后的CSV导出内容不应为空"
+    print(f"   ✅ export_orders_csv (date range): 导出成功")
+    
+    # 清理
+    os.remove(temp_db)
+    print()
+
 def run_all_tests():
     """运行所有测试"""
     print("=" * 50)
@@ -320,6 +424,7 @@ def run_all_tests():
         test_payment_plans,
         test_amount_uniqueness,
         test_security_checks,
+        test_admin_query_methods,
     ]
     
     passed = 0
