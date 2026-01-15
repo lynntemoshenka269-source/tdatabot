@@ -23,6 +23,18 @@ import random
 import logging
 from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 文件
+
+# 导入 i18n 模块
+try:
+    from i18n import get_text as t, get_user_language
+    I18N_AVAILABLE = True
+except ImportError:
+    I18N_AVAILABLE = False
+    def t(user_id, key):
+        return key
+    def get_user_language(user_id):
+        return 'zh'
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -976,15 +988,25 @@ class TelegramNotifier:
         """通知收款成功"""
         logger.info(f"🔔 开始发送支付成功通知: 用户 {order.user_id}, 订单 {order.order_id}")
         
+        user_id = order.user_id
         plan = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
-        plan_name = plan.get("name", "未知套餐")
         days = plan.get("days", 0)
+        
+        # 获取套餐名称 - 使用 i18n
+        plan_name_key_map = {
+            'plan_7d': 'payment_plan_name_7d',
+            'plan_30d': 'payment_plan_name_30d',
+            'plan_120d': 'payment_plan_name_120d',
+            'plan_365d': 'payment_plan_name_365d',
+        }
+        plan_name_key = plan_name_key_map.get(order.plan_id, 'payment_plan_name_7d')
+        plan_name = t(user_id, plan_name_key)
         
         # 1. 删除原消息
         try:
             message_id = self.db.get_order_message_id(order.order_id)
             if message_id:
-                deleted = await self.delete_message(order.user_id, message_id)
+                deleted = await self.delete_message(user_id, message_id)
                 if deleted:
                     logger.info(f"✅ 已删除订单消息: {message_id}")
                 else:
@@ -995,9 +1017,9 @@ class TelegramNotifier:
             logger.warning(f"⚠️ 删除消息异常: {type(e).__name__}: {e}")
         
         # 2. 发送庆祝贴纸
-        logger.info(f"🎉 准备发送庆祝贴纸到 {order.user_id}...")
+        logger.info(f"🎉 准备发送庆祝贴纸到 {user_id}...")
         sticker_id = "CAACAgIAAxkBAAFAr4hpZ4gcZrgcsdUcW-1DFfn8MqzMcgAC1hgAAt_skUmRnB_mBcJtujgE"
-        sticker_sent = await self.send_sticker(order.user_id, sticker_id)
+        sticker_sent = await self.send_sticker(user_id, sticker_id)
         if sticker_sent:
             logger.info(f"✅ 贴纸发送成功")
             await asyncio.sleep(0.5)  # 短暂等待
@@ -1009,7 +1031,7 @@ class TelegramNotifier:
         try:
             conn = sqlite3.connect(PaymentConfig.MAIN_DB)
             c = conn.cursor()
-            c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (order.user_id,))
+            c.execute("SELECT expiry_time FROM memberships WHERE user_id = ?", (user_id,))
             row = c.fetchone()
             conn.close()
             
@@ -1023,30 +1045,40 @@ class TelegramNotifier:
         except Exception as e:
             logger.warning(f"获取会员到期时间失败: {e}")
         
-        # 4. 发送用户成功消息
+        # 4. 发送用户成功消息 - 使用 i18n
+        success_title = t(user_id, 'payment_success_title')
+        success_confirmed = t(user_id, 'payment_success_confirmed')
+        order_info_title = t(user_id, 'payment_order_info_title')
+        order_id_label = t(user_id, 'payment_order_id')
+        plan_label = t(user_id, 'payment_plan')
+        amount_label = t(user_id, 'payment_amount')
+        days_label = t(user_id, 'payment_member_days')
+        expiry_label = t(user_id, 'payment_member_expiry')
+        thanks_msg = t(user_id, 'payment_thanks')
+        
         user_msg = f"""
-🎉🎉🎉 <b>支付成功！</b> 🎉🎉🎉
+{success_title}
 
-您的支付已确认，会员已自动开通！
+{success_confirmed}
 
-<b>订单信息</b>
-• 订单号: <code>{order.order_id}</code>
-• 套餐: {plan_name}
-• 金额: {order.amount:.4f} USDT
-• 会员天数: +{days} 天
-• 会员到期: {expiry_time}
+<b>{order_info_title}</b>
+• {order_id_label}: <code>{order.order_id}</code>
+• {plan_label}: {plan_name}
+• {amount_label}: {order.amount:.4f} USDT
+• {days_label}: +{days} 天
+• {expiry_label}: {expiry_time}
 
-感谢您的支持！💎
+{thanks_msg}
         """
         
-        logger.info(f"📝 准备发送成功消息到 {order.user_id}...")
-        msg_sent = await self.send_message(order.user_id, user_msg)
+        logger.info(f"📝 准备发送成功消息到 {user_id}...")
+        msg_sent = await self.send_message(user_id, user_msg)
         if msg_sent:
-            logger.info(f"✅ 用户成功消息发送完成: {order.user_id}")
+            logger.info(f"✅ 用户成功消息发送完成: {user_id}")
         else:
-            logger.error(f"❌ 用户成功消息发送失败: {order.user_id}")
+            logger.error(f"❌ 用户成功消息发送失败: {user_id}")
         
-        # 5. 发送管理员通知
+        # 5. 发送管理员通知 - 使用 i18n
         if self.notify_chat_id:
             logger.info(f"📢 准备发送管理员通知...")
             # 获取地址信息（如果有）
@@ -1063,20 +1095,29 @@ class TelegramNotifier:
                     return f"{addr[:8]}*****{addr[-8:]}"
                 return addr
             
+            # 管理员通知使用中文（因为管理员通常是中文用户）
+            admin_new_order = t(user_id, 'payment_admin_new_order')
+            admin_order_info = t(user_id, 'payment_order_info_title')
+            admin_user_id = t(user_id, 'payment_user_id')
+            admin_address_info = t(user_id, 'payment_address_info')
+            admin_receive_addr = t(user_id, 'payment_receive_address')
+            admin_send_addr = t(user_id, 'payment_send_address')
+            view_tx_btn = t(user_id, 'btn_view_transaction')
+            
             admin_msg = f"""
-💰 <b>收到新充值订单</b>
+{admin_new_order}
 
-<b>订单信息</b>
-• 订单号: <code>{order.order_id}</code>
-• 用户ID: {order.user_id}
-• 套餐: {plan_name}
-• 金额: {order.amount:.4f} USDT
-• 会员天数: {days} 天
-• 会员到期: {expiry_time}
+<b>{admin_order_info}</b>
+• {order_id_label}: <code>{order.order_id}</code>
+• {admin_user_id}: {user_id}
+• {plan_label}: {plan_name}
+• {amount_label}: {order.amount:.4f} USDT
+• {days_label}: {days} 天
+• {expiry_label}: {expiry_time}
 
-<b>地址信息</b>
-✅ 接收地址: <code>{mask_address(to_address)}</code>
-🅾️ 发送地址: <code>{mask_address(from_address)}</code>
+<b>{admin_address_info}</b>
+{admin_receive_addr}: <code>{mask_address(to_address)}</code>
+{admin_send_addr}: <code>{mask_address(from_address)}</code>
             """
             
             # 发送带按钮的消息
@@ -1085,10 +1126,13 @@ class TelegramNotifier:
                 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
                 
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔍 查看交易明细", url=f"https://tronscan.org/#/transaction/{tx_hash}")]
+                    [InlineKeyboardButton(view_tx_btn, url=f"https://tronscan.org/#/transaction/{tx_hash}")]
                 ])
                 
-                await self.send_message_with_keyboard(int(self.notify_chat_id), admin_msg, keyboard)
+                # 转换为 dict 格式
+                keyboard_dict = keyboard.to_dict()
+                
+                await self.send_message_with_keyboard(int(self.notify_chat_id), admin_msg, keyboard_dict)
             except Exception as e:
                 logger.error(f"发送管理员通知失败: {e}")
                 # 如果带按钮的消息失败，至少发送纯文本消息

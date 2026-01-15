@@ -2775,4 +2775,113 @@ TEXTS = {
     'broadcast_detail_results': '📈 Send Results',
     'broadcast_detail_duration': 'Duration',
     'broadcast_detail_content': '📄 Content',
+    
+    # ===== USDT Payment System =====
+    # Payment menu
+    'payment_menu_title': '💎 USDT Payment',
+    'payment_menu_desc': 'Please select a membership plan:',
+    'payment_plan_7d': '7-Day Membership - 5 USDT',
+    'payment_plan_30d': '30-Day Membership - 15 USDT',
+    'payment_plan_120d': '120-Day Membership - 50 USDT',
+    'payment_plan_365d': '365-Day Membership - 100 USDT',
+    'btn_back_payment_menu': '🔙 Back to Payment Menu',
+    
+    # Order created
+    'payment_order_created': '✅ Order Created',
+    'payment_order_id': 'Order ID',
+    'payment_order_info': 'Please complete payment using the information above',
+    'payment_amount': 'Amount',
+    'payment_plan': 'Plan',
+    'payment_days': 'Membership Days',
+    'payment_valid_time': 'Valid For',
+    'payment_minutes': 'minutes',
+    'payment_seconds': 'seconds',
+    
+    # Wallet address
+    'payment_wallet_address': 'Wallet Address',
+    'payment_address_click_copy': '(Click to copy)',
+    
+    # Important notice
+    'payment_important_notice': '⚠️ Important Notice',
+    'payment_notice_1': '1. Please use USDT-TRC20 for transfer',
+    'payment_notice_2': '2. Amount must be exact to 4 decimal places',
+    'payment_notice_3': '3. Please complete payment within the valid period',
+    'payment_notice_4': '4. Payment will be processed automatically',
+    
+    # QR code payment
+    'payment_scan_qr': 'Scan to Pay',
+    'payment_scan_desc': 'Scan the QR code below with a TRC20-compatible wallet',
+    
+    # Buttons
+    'btn_cancel_order': '❌ Cancel Order',
+    'btn_back_main_menu': '🔙 Back to Main Menu',
+    'btn_repurchase': '💎 Purchase Again',
+    
+    # Order cancelled
+    'payment_order_cancelled': '❌ Order Cancelled',
+    'payment_order_cancelled_title': 'Order Cancelled',
+    'payment_order_cancelled_status': 'Cancelled',
+    'payment_repurchase_hint': 'To purchase membership, please select a plan again.',
+    
+    # Order expired
+    'payment_order_expired': '⏱️ Order Expired',
+    'payment_order_expired_title': 'Order Expired',
+    'payment_order_expired_status': 'Expired',
+    'payment_expired_hint': 'Order has expired. Please create a new order to purchase membership.',
+    
+    # Payment success
+    'payment_success_title': '🎉🎉🎉 Payment Successful! 🎉🎉🎉',
+    'payment_success_confirmed': 'Your payment has been confirmed. Membership activated!',
+    'payment_order_info_title': 'Order Information',
+    'payment_member_days': 'Membership Days',
+    'payment_member_expiry': 'Expires On',
+    'payment_thanks': 'Thank you for your support! 💎',
+    'payment_tx_info_title': 'Transaction Information',
+    'payment_tx_hash': 'Transaction Hash',
+    
+    # Admin notification
+    'payment_admin_new_order': '💰 New Payment Received',
+    'payment_user_id': 'User ID',
+    'payment_address_info': 'Address Information',
+    'payment_receive_address': '✅ Receiving Address',
+    'payment_send_address': '🅾️ Sending Address',
+    'btn_view_transaction': '🔍 View Transaction',
+    
+    # Error messages
+    'payment_error_existing_order': '❌ You have a pending order. Please complete or cancel it first.',
+    'payment_error_create_failed': '❌ Failed to create order. Please try again later.',
+    'payment_error_invalid_plan': '❌ Invalid plan',
+    'payment_error_not_found': '❌ Order not found',
+    'payment_error_already_paid': '❌ Order already paid',
+    'payment_error_expired': '❌ Order has expired',
+    
+    # Status
+    'payment_status': 'Status',
+    'payment_status_pending': 'Pending',
+    'payment_status_paid': 'Paid',
+    'payment_status_completed': 'Completed',
+    'payment_status_expired': 'Expired',
+    'payment_status_cancelled': 'Cancelled',
+    
+    # Payment menu details
+    'payment_menu_package_info': '💰 Package Information',
+    'payment_menu_info_1': '• Supports USDT-TRC20 payment',
+    'payment_menu_info_2': '• Random decimals to avoid conflicts',
+    'payment_menu_info_3': '• Order valid for 10 minutes',
+    'payment_menu_info_4': '• Automatic processing after payment',
+    'payment_menu_security': '🔒 Security',
+    'payment_menu_security_1': '• 20 block confirmations',
+    'payment_menu_security_2': '• Official USDT contract verification',
+    'payment_menu_security_3': '• Exact amount matching',
+    'payment_menu_security_4': '• Duplicate payment prevention',
+    'payment_menu_select_plan': 'Select a plan:',
+    
+    # Plan names
+    'payment_plan_name_7d': '7-Day Membership',
+    'payment_plan_name_30d': '30-Day Membership',
+    'payment_plan_name_120d': '120-Day Membership',
+    'payment_plan_name_365d': '365-Day Membership',
+    
+    # VIP menu button
+    'btn_usdt_payment': '💎 USDT Recharge',
 }
