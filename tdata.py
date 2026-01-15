@@ -12768,6 +12768,22 @@ class EnhancedBot:
             self.handle_admin_search(query)
         elif data == "admin_recent":
             self.handle_admin_recent(query)
+        elif data == "admin_payment_stats":
+            self.handle_admin_payment_stats(query)
+        elif data == "admin_payment_orders":
+            self.handle_admin_payment_orders(query, 1)  # First page
+        elif data.startswith("admin_orders_page_"):
+            page = int(data.split("_")[-1])
+            self.handle_admin_payment_orders(query, page)
+        elif data == "admin_payment_export":
+            self.handle_admin_payment_export(query)
+        elif data.startswith("admin_export_"):
+            export_type = data.split("_")[-1]  # today, week, month, all
+            self.handle_admin_export_generate(query, export_type)
+        elif data == "admin_query_by_date":
+            self.handle_admin_query_by_date(query)
+        elif data == "admin_query_by_user":
+            self.handle_admin_query_by_user(query)
         elif data.startswith("user_detail_"):
             user_id_to_view = int(data.split("_")[2])
             self.handle_user_detail(query, user_id_to_view)
@@ -13258,6 +13274,13 @@ class EnhancedBot:
                 InlineKeyboardButton(t(user_id, 'admin_btn_recent_users'), callback_data="admin_recent")
             ],
             [
+                InlineKeyboardButton(t(user_id, 'btn_admin_payment_stats'), callback_data="admin_payment_stats"),
+                InlineKeyboardButton(t(user_id, 'btn_admin_payment_orders'), callback_data="admin_payment_orders")
+            ],
+            [
+                InlineKeyboardButton(t(user_id, 'btn_admin_payment_export'), callback_data="admin_payment_export")
+            ],
+            [
                 InlineKeyboardButton(t(user_id, 'admin_btn_card_activation'), callback_data="admin_card_menu"),
                 InlineKeyboardButton(t(user_id, 'admin_btn_manual_activation'), callback_data="admin_manual_menu")
             ],
@@ -13523,6 +13546,443 @@ class EnhancedBot:
         
         keyboard = InlineKeyboardMarkup(buttons)
         self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_admin_payment_stats(self, query):
+        """管理员收款统计页面"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer()
+        
+        try:
+            from tron import PaymentDatabase
+            payment_db = PaymentDatabase()
+            
+            # 获取统计数据
+            today_stats = payment_db.get_today_stats()
+            week_stats = payment_db.get_week_stats()
+            month_stats = payment_db.get_month_stats()
+            
+            # 格式化今日统计
+            today_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+            
+            text = f"""<b>{t(user_id, 'admin_payment_stats_title')}</b>
+
+━━━━━━━━━━━━━━━━━━━━
+<b>{t(user_id, 'admin_stats_today')} ({today_date})</b>
+• {t(user_id, 'admin_stats_order_count')}: {today_stats['total_count']} 笔
+• {t(user_id, 'admin_stats_total_amount')}: {today_stats['total_amount']:.4f} USDT
+• {t(user_id, 'admin_stats_completed')}: {today_stats['completed_count']} 笔 ({today_stats['completed_amount']:.4f} USDT)
+• {t(user_id, 'admin_stats_pending')}: {today_stats['pending_count']} 笔 ({today_stats['pending_amount']:.4f} USDT)
+• {t(user_id, 'admin_stats_cancelled')}: {today_stats['cancelled_count']} 笔 ({today_stats['cancelled_amount']:.4f} USDT)
+• {t(user_id, 'admin_stats_expired')}: {today_stats['expired_count']} 笔 ({today_stats['expired_amount']:.4f} USDT)
+
+━━━━━━━━━━━━━━━━━━━━
+<b>{t(user_id, 'admin_stats_week')}</b>
+• {t(user_id, 'admin_stats_order_count')}: {week_stats['total_count']} 笔
+• {t(user_id, 'admin_stats_total_amount')}: {week_stats['total_amount']:.4f} USDT
+
+━━━━━━━━━━━━━━━━━━━━
+<b>{t(user_id, 'admin_stats_month')}</b>
+• {t(user_id, 'admin_stats_order_count')}: {month_stats['total_count']} 笔
+• {t(user_id, 'admin_stats_total_amount')}: {month_stats['total_amount']:.4f} USDT
+"""
+            
+            buttons = [
+                [InlineKeyboardButton(t(user_id, 'btn_admin_view_orders'), callback_data="admin_payment_orders")],
+                [
+                    InlineKeyboardButton(t(user_id, 'btn_admin_query_by_date'), callback_data="admin_query_by_date"),
+                    InlineKeyboardButton(t(user_id, 'btn_admin_query_by_user'), callback_data="admin_query_by_user")
+                ],
+                [InlineKeyboardButton(t(user_id, 'admin_btn_back_panel'), callback_data="admin_panel")]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(buttons)
+            self.safe_edit_message(query, text, 'HTML', keyboard)
+            
+        except Exception as e:
+            logger.error(f"显示收款统计失败: {e}")
+            query.answer("❌ 加载统计数据失败", show_alert=True)
+    
+    def handle_admin_payment_orders(self, query, page: int = 1):
+        """管理员订单列表页面"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer()
+        
+        try:
+            from tron import PaymentDatabase, PaymentConfig
+            payment_db = PaymentDatabase()
+            
+            # 分页获取订单
+            per_page = 5
+            orders, total_pages = payment_db.get_orders_paginated(page=page, per_page=per_page)
+            
+            if not orders:
+                text = f"<b>{t(user_id, 'admin_orders_title')}</b>\n\n{t(user_id, 'admin_no_orders')}"
+                buttons = [
+                    [InlineKeyboardButton(t(user_id, 'btn_admin_back_stats'), callback_data="admin_payment_stats")]
+                ]
+                keyboard = InlineKeyboardMarkup(buttons)
+                self.safe_edit_message(query, text, 'HTML', keyboard)
+                return
+            
+            text = f"""<b>{t(user_id, 'admin_orders_title')}</b>
+
+{t(user_id, 'admin_orders_recent')} ({t(user_id, 'admin_orders_page').format(current=page, total=total_pages)})
+"""
+            
+            # 订单状态映射
+            status_map = {
+                'pending': '⏳ 待支付',
+                'paid': '💳 已支付',
+                'completed': '✅ 已完成',
+                'expired': '⏱️ 已过期',
+                'cancelled': '❌ 已取消'
+            }
+            
+            for i, order in enumerate(orders, 1):
+                # 获取套餐名称
+                plan_info = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
+                plan_name = plan_info.get('name', order.plan_id)
+                
+                text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
+                text += f"{i}️⃣ {order.order_id}\n"
+                text += f"• {t(user_id, 'admin_orders_user_id')}: <code>{order.user_id}</code>\n"
+                text += f"• {t(user_id, 'admin_orders_amount')}: {order.amount:.4f} USDT\n"
+                text += f"• {t(user_id, 'admin_orders_plan')}: {plan_name}\n"
+                text += f"• {t(user_id, 'admin_orders_status')}: {status_map.get(order.status.value, order.status.value)}\n"
+                text += f"• {t(user_id, 'admin_orders_created')}: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                if order.tx_hash:
+                    tx_short = order.tx_hash[:12] + "..."
+                    text += f"• {t(user_id, 'admin_orders_tx_hash')}: {tx_short}\n"
+            
+            # 分页按钮
+            nav_buttons = []
+            if page > 1:
+                nav_buttons.append(InlineKeyboardButton(t(user_id, 'btn_admin_prev_page'), callback_data=f"admin_orders_page_{page-1}"))
+            
+            nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
+            
+            if page < total_pages:
+                nav_buttons.append(InlineKeyboardButton(t(user_id, 'btn_admin_next_page'), callback_data=f"admin_orders_page_{page+1}"))
+            
+            buttons = [
+                nav_buttons,
+                [
+                    InlineKeyboardButton(t(user_id, 'btn_admin_query_by_date'), callback_data="admin_query_by_date"),
+                    InlineKeyboardButton(t(user_id, 'btn_admin_query_by_user'), callback_data="admin_query_by_user")
+                ],
+                [InlineKeyboardButton(t(user_id, 'btn_admin_back_stats'), callback_data="admin_payment_stats")]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(buttons)
+            self.safe_edit_message(query, text, 'HTML', keyboard)
+            
+        except Exception as e:
+            logger.error(f"显示订单列表失败: {e}")
+            query.answer("❌ 加载订单列表失败", show_alert=True)
+    
+    def handle_admin_payment_export(self, query):
+        """管理员导出报表页面"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer()
+        
+        text = f"""<b>{t(user_id, 'admin_export_title')}</b>
+
+{t(user_id, 'admin_export_select')}
+"""
+        
+        buttons = [
+            [InlineKeyboardButton(t(user_id, 'btn_admin_export_today'), callback_data="admin_export_today")],
+            [InlineKeyboardButton(t(user_id, 'btn_admin_export_week'), callback_data="admin_export_week")],
+            [InlineKeyboardButton(t(user_id, 'btn_admin_export_month'), callback_data="admin_export_month")],
+            [InlineKeyboardButton(t(user_id, 'btn_admin_export_all'), callback_data="admin_export_all")],
+            [InlineKeyboardButton(t(user_id, 'admin_btn_back_panel'), callback_data="admin_panel")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(buttons)
+        self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_admin_export_generate(self, query, export_type: str):
+        """生成并导出报表"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer(t(user_id, 'admin_export_generating'))
+        
+        try:
+            from tron import PaymentDatabase
+            payment_db = PaymentDatabase()
+            
+            # 根据类型确定日期范围
+            start_date = None
+            end_date = None
+            filename_suffix = export_type
+            
+            if export_type == "today":
+                now = datetime.now(BEIJING_TZ)
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+                filename_suffix = now.strftime('%Y-%m-%d')
+            elif export_type == "week":
+                now = datetime.now(BEIJING_TZ)
+                start_date = now - timedelta(days=now.weekday())
+                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
+                filename_suffix = f"week_{start_date.strftime('%Y-%m-%d')}"
+            elif export_type == "month":
+                now = datetime.now(BEIJING_TZ)
+                start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                if now.month == 12:
+                    end_date = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+                else:
+                    end_date = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+                filename_suffix = now.strftime('%Y-%m')
+            
+            # 生成CSV
+            csv_content = payment_db.export_orders_csv(start_date, end_date)
+            
+            if not csv_content:
+                query.answer(t(user_id, 'admin_export_empty'), show_alert=True)
+                return
+            
+            # 发送文件
+            filename = t(user_id, 'admin_export_file_name').format(date=filename_suffix)
+            csv_bytes = BytesIO(csv_content.encode('utf-8'))
+            csv_bytes.seek(0)
+            
+            query.message.reply_document(
+                document=csv_bytes,
+                filename=filename,
+                caption=t(user_id, 'admin_export_success')
+            )
+            
+            # 返回到导出菜单
+            self.handle_admin_payment_export(query)
+            
+        except Exception as e:
+            logger.error(f"导出报表失败: {e}")
+            query.answer("❌ 导出失败", show_alert=True)
+    
+    def handle_admin_query_by_date(self, query):
+        """按日期查询提示"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer()
+        
+        # Set user status in database
+        self.db.save_user(
+            user_id,
+            query.from_user.username or "",
+            query.from_user.first_name or "",
+            "waiting_admin_query_date"
+        )
+        
+        text = t(user_id, 'admin_query_date_prompt')
+        
+        buttons = [
+            [InlineKeyboardButton(t(user_id, 'btn_cancel'), callback_data="admin_payment_orders")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(buttons)
+        self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_admin_query_by_user(self, query):
+        """按用户查询提示"""
+        user_id = query.from_user.id
+        
+        if not self.db.is_admin(user_id):
+            query.answer(t(user_id, 'admin_panel_access_denied'))
+            return
+        
+        query.answer()
+        
+        # Set user status in database
+        self.db.save_user(
+            user_id,
+            query.from_user.username or "",
+            query.from_user.first_name or "",
+            "waiting_admin_query_user"
+        )
+        
+        text = t(user_id, 'admin_query_user_prompt')
+        
+        buttons = [
+            [InlineKeyboardButton(t(user_id, 'btn_cancel'), callback_data="admin_payment_orders")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(buttons)
+        self.safe_edit_message(query, text, 'HTML', keyboard)
+    
+    def handle_admin_query_input(self, update: Update, user_id: int, text: str):
+        """处理管理员查询输入"""
+        user_state = self.get_user_state(user_id)
+        action = user_state.get('action')
+        
+        if action == 'admin_query_date':
+            # 处理日期查询
+            self.handle_admin_date_query_result(update, user_id, text)
+        elif action == 'admin_query_user':
+            # 处理用户查询
+            self.handle_admin_user_query_result(update, user_id, text)
+    
+    def handle_admin_date_query_result(self, update: Update, user_id: int, text: str):
+        """处理日期查询结果"""
+        try:
+            from tron import PaymentDatabase, PaymentConfig
+            payment_db = PaymentDatabase()
+            
+            # 解析日期
+            parts = text.strip().split()
+            
+            if len(parts) == 1:
+                # 单日查询
+                date_str = parts[0]
+                start_date = datetime.strptime(date_str, '%Y-%m-%d')
+                start_date = start_date.replace(tzinfo=BEIJING_TZ, hour=0, minute=0, second=0)
+                end_date = start_date.replace(hour=23, minute=59, second=59)
+            elif len(parts) == 2:
+                # 日期范围查询
+                start_str, end_str = parts
+                start_date = datetime.strptime(start_str, '%Y-%m-%d')
+                start_date = start_date.replace(tzinfo=BEIJING_TZ, hour=0, minute=0, second=0)
+                end_date = datetime.strptime(end_str, '%Y-%m-%d')
+                end_date = end_date.replace(tzinfo=BEIJING_TZ, hour=23, minute=59, second=59)
+            else:
+                update.message.reply_text(t(user_id, 'admin_invalid_date'))
+                return
+            
+            # 查询订单
+            orders = payment_db.get_orders_by_date_range(start_date, end_date)
+            
+            if not orders:
+                update.message.reply_text(t(user_id, 'admin_query_no_results'))
+                return
+            
+            # 显示结果
+            text = f"<b>{t(user_id, 'admin_orders_title')}</b>\n\n"
+            text += f"📅 {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}\n"
+            text += f"共找到 {len(orders)} 笔订单\n"
+            
+            # 状态映射
+            status_map = {
+                'pending': '⏳ 待支付',
+                'paid': '💳 已支付',
+                'completed': '✅ 已完成',
+                'expired': '⏱️ 已过期',
+                'cancelled': '❌ 已取消'
+            }
+            
+            for i, order in enumerate(orders[:10], 1):  # 最多显示10个
+                plan_info = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
+                plan_name = plan_info.get('name', order.plan_id)
+                
+                text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
+                text += f"{i}️⃣ {order.order_id}\n"
+                text += f"• {t(user_id, 'admin_orders_user_id')}: <code>{order.user_id}</code>\n"
+                text += f"• {t(user_id, 'admin_orders_amount')}: {order.amount:.4f} USDT\n"
+                text += f"• {t(user_id, 'admin_orders_plan')}: {plan_name}\n"
+                text += f"• {t(user_id, 'admin_orders_status')}: {status_map.get(order.status.value, order.status.value)}\n"
+                text += f"• {t(user_id, 'admin_orders_created')}: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            if len(orders) > 10:
+                text += f"\n... 还有 {len(orders) - 10} 笔订单"
+            
+            update.message.reply_text(text, parse_mode='HTML')
+            
+            # 清除状态 - reset user status
+            self.db.save_user(
+                user_id,
+                update.message.from_user.username or "",
+                update.message.from_user.first_name or "",
+                "active"
+            )
+            
+        except ValueError:
+            update.message.reply_text(t(user_id, 'admin_invalid_date'))
+        except Exception as e:
+            logger.error(f"日期查询失败: {e}")
+            update.message.reply_text("❌ 查询失败")
+    
+    def handle_admin_user_query_result(self, update: Update, user_id: int, text: str):
+        """处理用户查询结果"""
+        try:
+            from tron import PaymentDatabase, PaymentConfig
+            payment_db = PaymentDatabase()
+            
+            # 解析用户ID
+            target_user_id = int(text.strip())
+            
+            # 查询订单
+            orders = payment_db.get_orders_by_user(target_user_id)
+            
+            if not orders:
+                update.message.reply_text(t(user_id, 'admin_query_no_results'))
+                return
+            
+            # 显示结果
+            text = f"<b>{t(user_id, 'admin_orders_title')}</b>\n\n"
+            text += f"👤 用户ID: <code>{target_user_id}</code>\n"
+            text += f"共找到 {len(orders)} 笔订单\n"
+            
+            # 状态映射
+            status_map = {
+                'pending': '⏳ 待支付',
+                'paid': '💳 已支付',
+                'completed': '✅ 已完成',
+                'expired': '⏱️ 已过期',
+                'cancelled': '❌ 已取消'
+            }
+            
+            for i, order in enumerate(orders[:10], 1):  # 最多显示10个
+                plan_info = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {})
+                plan_name = plan_info.get('name', order.plan_id)
+                
+                text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
+                text += f"{i}️⃣ {order.order_id}\n"
+                text += f"• {t(user_id, 'admin_orders_amount')}: {order.amount:.4f} USDT\n"
+                text += f"• {t(user_id, 'admin_orders_plan')}: {plan_name}\n"
+                text += f"• {t(user_id, 'admin_orders_status')}: {status_map.get(order.status.value, order.status.value)}\n"
+                text += f"• {t(user_id, 'admin_orders_created')}: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            if len(orders) > 10:
+                text += f"\n... 还有 {len(orders) - 10} 笔订单"
+            
+            update.message.reply_text(text, parse_mode='HTML')
+            
+            # 清除状态 - reset user status
+            self.db.save_user(
+                user_id,
+                update.message.from_user.username or "",
+                update.message.from_user.first_name or "",
+                "active"
+            )
+            
+        except ValueError:
+            update.message.reply_text(t(user_id, 'admin_invalid_user_id'))
+        except Exception as e:
+            logger.error(f"用户查询失败: {e}")
+            update.message.reply_text("❌ 查询失败")
 
     def handle_user_detail(self, query, target_user_id: int):
         """显示用户详细信息"""
@@ -15311,6 +15771,12 @@ class EnhancedBot:
                     return
                 elif user_status == "waiting_revoke_user":
                     self.handle_revoke_user_input(update, user_id, text)
+                    return
+                elif user_status == "waiting_admin_query_date":
+                    self.handle_admin_date_query_result(update, user_id, text)
+                    return
+                elif user_status == "waiting_admin_query_user":
+                    self.handle_admin_user_query_result(update, user_id, text)
                     return
                 elif user_status == "waiting_rename_newname":
                     self.handle_rename_newname_input(update, context, user_id, text)
