@@ -14,7 +14,8 @@ import json
 import time
 import qrcode
 import base58
-from io import BytesIO
+import csv
+from io import BytesIO, StringIO
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -689,7 +690,7 @@ class PaymentDatabase:
         start = now - timedelta(days=now.weekday())
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         # 本周日
-        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microsecond=999999)
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
         return self.get_orders_stats(start, end)
     
     def get_month_stats(self) -> dict:
@@ -801,8 +802,8 @@ class PaymentDatabase:
                     ))
             
             # 生成 CSV
-            output = BytesIO()
-            output.write('\ufeff'.encode('utf-8'))  # UTF-8 BOM for Excel
+            output = StringIO()
+            output.write('\ufeff')  # UTF-8 BOM for Excel
             writer = csv.writer(output)
             
             # 写入表头
@@ -837,7 +838,7 @@ class PaymentDatabase:
                     order.tx_hash or ''
                 ])
             
-            return output.getvalue().decode('utf-8')
+            return output.getvalue()
         except Exception as e:
             logger.error(f"❌ 导出订单CSV失败: {e}")
             return ""
