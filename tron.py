@@ -536,6 +536,311 @@ class PaymentDatabase:
         except Exception as e:
             logger.error(f"❌ 获取过期订单失败: {e}")
             return []
+    
+    def get_orders_by_date_range(self, start_date: datetime, end_date: datetime) -> List[PaymentOrder]:
+        """按日期范围获取订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT * FROM orders 
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY created_at DESC
+            """, (start_date.isoformat(), end_date.isoformat()))
+            
+            rows = c.fetchall()
+            conn.close()
+            
+            orders = []
+            for row in rows:
+                orders.append(PaymentOrder(
+                    order_id=row[0],
+                    user_id=row[1],
+                    plan_id=row[2],
+                    amount=row[3],
+                    status=OrderStatus(row[4]),
+                    created_at=datetime.fromisoformat(row[5]),
+                    expires_at=datetime.fromisoformat(row[6]),
+                    tx_hash=row[7],
+                    paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                ))
+            
+            return orders
+        except Exception as e:
+            logger.error(f"❌ 按日期范围获取订单失败: {e}")
+            return []
+    
+    def get_orders_by_user(self, user_id: int) -> List[PaymentOrder]:
+        """按用户ID获取订单"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT * FROM orders 
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+            """, (user_id,))
+            
+            rows = c.fetchall()
+            conn.close()
+            
+            orders = []
+            for row in rows:
+                orders.append(PaymentOrder(
+                    order_id=row[0],
+                    user_id=row[1],
+                    plan_id=row[2],
+                    amount=row[3],
+                    status=OrderStatus(row[4]),
+                    created_at=datetime.fromisoformat(row[5]),
+                    expires_at=datetime.fromisoformat(row[6]),
+                    tx_hash=row[7],
+                    paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                ))
+            
+            return orders
+        except Exception as e:
+            logger.error(f"❌ 按用户ID获取订单失败: {e}")
+            return []
+    
+    def get_orders_stats(self, start_date: datetime = None, end_date: datetime = None) -> dict:
+        """获取订单统计
+        
+        返回:
+        {
+            'total_count': 100,
+            'total_amount': 1234.5678,
+            'completed_count': 80,
+            'completed_amount': 1000.0000,
+            'pending_count': 10,
+            'pending_amount': 100.0000,
+            'cancelled_count': 5,
+            'cancelled_amount': 50.0000,
+            'expired_count': 5,
+            'expired_amount': 84.5678,
+        }
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            # 构建基础查询
+            where_clause = ""
+            params = []
+            if start_date and end_date:
+                where_clause = "WHERE created_at >= ? AND created_at <= ?"
+                params = [start_date.isoformat(), end_date.isoformat()]
+            
+            # 获取总体统计
+            query = f"SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM orders {where_clause}"
+            c.execute(query, params)
+            total_count, total_amount = c.fetchone()
+            
+            # 按状态统计
+            stats = {
+                'total_count': total_count or 0,
+                'total_amount': float(total_amount or 0),
+            }
+            
+            for status in [OrderStatus.COMPLETED, OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.EXPIRED]:
+                if where_clause:
+                    query = f"SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM orders {where_clause} AND status = ?"
+                    c.execute(query, params + [status.value])
+                else:
+                    query = f"SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM orders WHERE status = ?"
+                    c.execute(query, [status.value])
+                
+                count, amount = c.fetchone()
+                stats[f'{status.value}_count'] = count or 0
+                stats[f'{status.value}_amount'] = float(amount or 0)
+            
+            conn.close()
+            return stats
+        except Exception as e:
+            logger.error(f"❌ 获取订单统计失败: {e}")
+            return {
+                'total_count': 0,
+                'total_amount': 0,
+                'completed_count': 0,
+                'completed_amount': 0,
+                'pending_count': 0,
+                'pending_amount': 0,
+                'cancelled_count': 0,
+                'cancelled_amount': 0,
+                'expired_count': 0,
+                'expired_amount': 0,
+            }
+    
+    def get_today_stats(self) -> dict:
+        """获取今日统计"""
+        now = datetime.now(BEIJING_TZ)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return self.get_orders_stats(start, end)
+    
+    def get_week_stats(self) -> dict:
+        """获取本周统计"""
+        now = datetime.now(BEIJING_TZ)
+        # 本周一
+        start = now - timedelta(days=now.weekday())
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 本周日
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microsecond=999999)
+        return self.get_orders_stats(start, end)
+    
+    def get_month_stats(self) -> dict:
+        """获取本月统计"""
+        now = datetime.now(BEIJING_TZ)
+        # 本月第一天
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # 本月最后一天
+        if now.month == 12:
+            end = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
+        else:
+            end = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
+        return self.get_orders_stats(start, end)
+    
+    def get_orders_paginated(self, page: int = 1, per_page: int = 5, 
+                           status: str = None, user_id: int = None,
+                           start_date: datetime = None, end_date: datetime = None) -> Tuple[List[PaymentOrder], int]:
+        """分页获取订单
+        
+        返回: (订单列表, 总页数)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            # 构建查询条件
+            where_conditions = []
+            params = []
+            
+            if status:
+                where_conditions.append("status = ?")
+                params.append(status)
+            
+            if user_id:
+                where_conditions.append("user_id = ?")
+                params.append(user_id)
+            
+            if start_date and end_date:
+                where_conditions.append("created_at >= ? AND created_at <= ?")
+                params.extend([start_date.isoformat(), end_date.isoformat()])
+            
+            where_clause = ""
+            if where_conditions:
+                where_clause = "WHERE " + " AND ".join(where_conditions)
+            
+            # 获取总数
+            count_query = f"SELECT COUNT(*) FROM orders {where_clause}"
+            c.execute(count_query, params)
+            total_count = c.fetchone()[0]
+            total_pages = (total_count + per_page - 1) // per_page if total_count > 0 else 1
+            
+            # 分页查询
+            offset = (page - 1) * per_page
+            query = f"""
+                SELECT * FROM orders {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """
+            c.execute(query, params + [per_page, offset])
+            rows = c.fetchall()
+            conn.close()
+            
+            orders = []
+            for row in rows:
+                orders.append(PaymentOrder(
+                    order_id=row[0],
+                    user_id=row[1],
+                    plan_id=row[2],
+                    amount=row[3],
+                    status=OrderStatus(row[4]),
+                    created_at=datetime.fromisoformat(row[5]),
+                    expires_at=datetime.fromisoformat(row[6]),
+                    tx_hash=row[7],
+                    paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                ))
+            
+            return orders, total_pages
+        except Exception as e:
+            logger.error(f"❌ 分页获取订单失败: {e}")
+            return [], 1
+    
+    def export_orders_csv(self, start_date: datetime = None, end_date: datetime = None) -> str:
+        """导出订单为 CSV 格式字符串"""
+        try:
+            # 获取订单
+            if start_date and end_date:
+                orders = self.get_orders_by_date_range(start_date, end_date)
+            else:
+                conn = sqlite3.connect(self.db_path)
+                c = conn.cursor()
+                c.execute("SELECT * FROM orders ORDER BY created_at DESC")
+                rows = c.fetchall()
+                conn.close()
+                
+                orders = []
+                for row in rows:
+                    orders.append(PaymentOrder(
+                        order_id=row[0],
+                        user_id=row[1],
+                        plan_id=row[2],
+                        amount=row[3],
+                        status=OrderStatus(row[4]),
+                        created_at=datetime.fromisoformat(row[5]),
+                        expires_at=datetime.fromisoformat(row[6]),
+                        tx_hash=row[7],
+                        paid_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                        completed_at=datetime.fromisoformat(row[9]) if row[9] else None
+                    ))
+            
+            # 生成 CSV
+            output = BytesIO()
+            output.write('\ufeff'.encode('utf-8'))  # UTF-8 BOM for Excel
+            writer = csv.writer(output)
+            
+            # 写入表头
+            writer.writerow([
+                '订单号', '用户ID', '套餐', '金额', '状态', 
+                '创建时间', '支付时间', '完成时间', '交易哈希'
+            ])
+            
+            # 写入数据
+            for order in orders:
+                # 获取套餐名称
+                plan_name = PaymentConfig.PAYMENT_PLANS.get(order.plan_id, {}).get('name', order.plan_id)
+                
+                # 状态映射
+                status_map = {
+                    'pending': '待支付',
+                    'paid': '已支付',
+                    'completed': '已完成',
+                    'expired': '已过期',
+                    'cancelled': '已取消'
+                }
+                
+                writer.writerow([
+                    order.order_id,
+                    order.user_id,
+                    plan_name,
+                    f'{order.amount:.4f}',
+                    status_map.get(order.status.value, order.status.value),
+                    order.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    order.paid_at.strftime('%Y-%m-%d %H:%M:%S') if order.paid_at else '',
+                    order.completed_at.strftime('%Y-%m-%d %H:%M:%S') if order.completed_at else '',
+                    order.tx_hash or ''
+                ])
+            
+            return output.getvalue().decode('utf-8')
+        except Exception as e:
+            logger.error(f"❌ 导出订单CSV失败: {e}")
+            return ""
 
 
 # ================================

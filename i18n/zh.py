@@ -2885,4 +2885,63 @@ TEXTS = {
     
     # VIP菜单按钮
     'btn_usdt_payment': '💎 USDT充值购买',
+    
+    # ===== 管理员收款管理 =====
+    # 管理面板按钮
+    'btn_admin_payment_stats': '📊 收款统计',
+    'btn_admin_payment_orders': '📋 订单查询',
+    'btn_admin_payment_export': '📈 导出报表',
+    
+    # 统计页面
+    'admin_payment_stats_title': '📊 收款统计',
+    'admin_stats_today': '📅 今日收款',
+    'admin_stats_week': '📅 本周收款',
+    'admin_stats_month': '📅 本月收款',
+    'admin_stats_order_count': '订单数',
+    'admin_stats_total_amount': '总金额',
+    'admin_stats_completed': '✅ 已完成',
+    'admin_stats_pending': '⏳ 待支付',
+    'admin_stats_cancelled': '❌ 已取消',
+    'admin_stats_expired': '⏱️ 已过期',
+    
+    # 订单列表
+    'admin_orders_title': '📋 订单列表',
+    'admin_orders_recent': '最近订单',
+    'admin_orders_page': '第 {current}/{total} 页',
+    'admin_orders_user_id': '用户ID',
+    'admin_orders_amount': '金额',
+    'admin_orders_plan': '套餐',
+    'admin_orders_status': '状态',
+    'admin_orders_created': '创建',
+    'admin_orders_tx_hash': '交易',
+    
+    # 按钮
+    'btn_admin_view_orders': '📋 查看订单列表',
+    'btn_admin_query_by_date': '📅 按日期查询',
+    'btn_admin_query_by_user': '🔍 按用户查询',
+    'btn_admin_prev_page': '⬅️ 上一页',
+    'btn_admin_next_page': '➡️ 下一页',
+    'btn_admin_export_today': '📅 今日订单',
+    'btn_admin_export_week': '📅 本周订单',
+    'btn_admin_export_month': '📅 本月订单',
+    'btn_admin_export_all': '📅 全部订单',
+    'btn_admin_back_stats': '🔙 返回收款统计',
+    
+    # 查询提示
+    'admin_query_date_prompt': '📅 按日期查询\n\n请输入查询日期范围：\n\n格式1: 单日查询\n  2026-01-15\n\n格式2: 日期范围\n  2026-01-01 2026-01-15\n\n请发送日期...',
+    'admin_query_user_prompt': '🔍 按用户查询\n\n请输入要查询的用户ID：\n\n示例: 5675295056\n\n请发送用户ID...',
+    
+    # 导出
+    'admin_export_title': '📈 导出报表',
+    'admin_export_select': '请选择导出范围：',
+    'admin_export_generating': '⏳ 正在生成报表...',
+    'admin_export_success': '✅ 报表已生成',
+    'admin_export_empty': '❌ 没有订单数据',
+    'admin_export_file_name': '收款报表_{date}.csv',
+    
+    # 错误
+    'admin_no_orders': '暂无订单数据',
+    'admin_invalid_date': '❌ 日期格式错误',
+    'admin_invalid_user_id': '❌ 用户ID格式错误',
+    'admin_query_no_results': '❌ 未找到相关订单',
 }
