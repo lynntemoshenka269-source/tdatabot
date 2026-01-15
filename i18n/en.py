@@ -2884,4 +2884,63 @@ TEXTS = {
     
     # VIP menu button
     'btn_usdt_payment': '💎 USDT Recharge',
+    
+    # ===== Admin Payment Management =====
+    # Admin panel buttons
+    'btn_admin_payment_stats': '📊 Payment Statistics',
+    'btn_admin_payment_orders': '📋 Order Query',
+    'btn_admin_payment_export': '📈 Export Report',
+    
+    # Statistics page
+    'admin_payment_stats_title': '📊 Payment Statistics',
+    'admin_stats_today': '📅 Today',
+    'admin_stats_week': '📅 This Week',
+    'admin_stats_month': '📅 This Month',
+    'admin_stats_order_count': 'Orders',
+    'admin_stats_total_amount': 'Total Amount',
+    'admin_stats_completed': '✅ Completed',
+    'admin_stats_pending': '⏳ Pending',
+    'admin_stats_cancelled': '❌ Cancelled',
+    'admin_stats_expired': '⏱️ Expired',
+    
+    # Order list
+    'admin_orders_title': '📋 Order List',
+    'admin_orders_recent': 'Recent Orders',
+    'admin_orders_page': 'Page {current}/{total}',
+    'admin_orders_user_id': 'User ID',
+    'admin_orders_amount': 'Amount',
+    'admin_orders_plan': 'Plan',
+    'admin_orders_status': 'Status',
+    'admin_orders_created': 'Created',
+    'admin_orders_tx_hash': 'TX Hash',
+    
+    # Buttons
+    'btn_admin_view_orders': '📋 View Order List',
+    'btn_admin_query_by_date': '📅 Query by Date',
+    'btn_admin_query_by_user': '🔍 Query by User',
+    'btn_admin_prev_page': '⬅️ Previous',
+    'btn_admin_next_page': '➡️ Next',
+    'btn_admin_export_today': '📅 Today\'s Orders',
+    'btn_admin_export_week': '📅 This Week',
+    'btn_admin_export_month': '📅 This Month',
+    'btn_admin_export_all': '📅 All Orders',
+    'btn_admin_back_stats': '🔙 Back to Statistics',
+    
+    # Query prompts
+    'admin_query_date_prompt': '📅 Query by Date\n\nPlease enter date range:\n\nFormat 1: Single date\n  2026-01-15\n\nFormat 2: Date range\n  2026-01-01 2026-01-15\n\nSend date...',
+    'admin_query_user_prompt': '🔍 Query by User\n\nPlease enter User ID:\n\nExample: 5675295056\n\nSend User ID...',
+    
+    # Export
+    'admin_export_title': '📈 Export Report',
+    'admin_export_select': 'Please select export range:',
+    'admin_export_generating': '⏳ Generating report...',
+    'admin_export_success': '✅ Report generated',
+    'admin_export_empty': '❌ No order data',
+    'admin_export_file_name': 'payment_report_{date}.csv',
+    
+    # Errors
+    'admin_no_orders': 'No orders found',
+    'admin_invalid_date': '❌ Invalid date format',
+    'admin_invalid_user_id': '❌ Invalid User ID',
+    'admin_query_no_results': '❌ No orders found',
 }
